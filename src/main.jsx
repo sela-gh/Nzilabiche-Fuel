@@ -8,14 +8,19 @@ import {
   Building2,
   CalendarCheck,
   ClipboardList,
+  CreditCard,
   Droplets,
   Factory,
   Gauge,
   LayoutDashboard,
+  Moon,
+  Phone,
   Plus,
+  Receipt,
   RefreshCw,
   ShieldCheck,
   Settings,
+  Sun,
   Truck,
   WalletCards
 } from "lucide-react";
@@ -25,6 +30,32 @@ import { isSupabaseConfigured } from "./supabaseClient.js";
 const APP_LOCALE = "en-TZ";
 const APP_TIME_ZONE = "Africa/Dar_es_Salaam";
 const EAT_OFFSET = "+03:00";
+
+const SHIFTS = [
+  { value: "day", label: "Day Shift", icon: Sun },
+  { value: "night", label: "Night Shift", icon: Moon }
+];
+
+const PAYMENT_METHODS = [
+  { value: "cash", label: "Cash" },
+  { value: "mobile_money", label: "Mobile Money" },
+  { value: "bank", label: "Bank Transfer" }
+];
+
+const EXPENSE_CATEGORIES = [
+  "Salaries & Wages",
+  "Electricity",
+  "Water",
+  "Rent",
+  "Maintenance & Repairs",
+  "Generator Fuel",
+  "Security",
+  "Transport",
+  "Supplies & Consumables",
+  "Tax & Levies",
+  "Insurance",
+  "Other"
+];
 
 const money = (value) =>
   new Intl.NumberFormat(APP_LOCALE, {
@@ -68,10 +99,7 @@ const eatDateTimeInput = (date = new Date()) => {
 };
 
 const eatInputToIso = (value) => {
-  if (!value) {
-    return value;
-  }
-
+  if (!value) return value;
   const withSeconds = value.length === 16 ? `${value}:00` : value;
   return new Date(`${withSeconds}${EAT_OFFSET}`).toISOString();
 };
@@ -84,9 +112,7 @@ const api = {
   async getDatabaseStatus() {
     const response = await fetch("/api/database-status");
     const body = await response.json();
-    if (!response.ok) {
-      throw new Error(body.message || "Database status check failed");
-    }
+    if (!response.ok) throw new Error(body.message || "Database status check failed");
     return body;
   },
   async post(path, payload) {
@@ -96,9 +122,7 @@ const api = {
       body: JSON.stringify(payload)
     });
     const body = await response.json();
-    if (!response.ok) {
-      throw new Error(body.error || "Request failed");
-    }
+    if (!response.ok) throw new Error(body.error || "Request failed");
     return body;
   }
 };
@@ -108,6 +132,7 @@ const navItems = [
   { id: "deposits", label: "Deposits", icon: Banknote },
   { id: "deliveries", label: "Deliveries", icon: Truck },
   { id: "depot", label: "Depot Trips", icon: Factory },
+  { id: "expenses", label: "Expenses", icon: Receipt },
   { id: "variance", label: "Variance", icon: AlertTriangle },
   { id: "reports", label: "Reports", icon: BarChart3 },
   { id: "setup", label: "Setup", icon: Settings }
@@ -115,8 +140,10 @@ const navItems = [
 
 const emptyForms = {
   deposit: {
-    stationId: "station-001",
+    stationId: "",
     date: eatDateTimeInput(),
+    shift: "day",
+    paymentMethod: "cash",
     lines: [
       { productId: "product-petrol", cashDeposited: 0, pumpPrice: 3000 },
       { productId: "product-diesel", cashDeposited: 0, pumpPrice: 2850 },
@@ -126,37 +153,39 @@ const emptyForms = {
   depot: {
     supplier: "",
     invoiceNumber: "",
-    lorryId: "lorry-001",
-    productId: "product-petrol",
+    lorryId: "",
+    productId: "",
     litersPurchased: 0,
     totalPurchaseCost: 0,
     purchasedAt: eatDateTimeInput()
   },
   delivery: {
-    stationId: "station-001",
-    productId: "product-petrol",
-    depotTripId: "trip-001",
+    stationId: "",
+    productId: "",
+    depotTripId: "",
     litersDelivered: 0,
     preDeliveryDipstickLiters: 0,
     deliveredAt: eatDateTimeInput()
   },
   internal: {
-    stationId: "station-001",
-    productId: "product-petrol",
+    stationId: "",
+    productId: "",
     date: eatDateTimeInput(),
+    shift: "day",
     liters: 0,
     reason: ""
   },
   pump: {
-    stationId: "station-001",
-    productId: "product-petrol",
+    stationId: "",
+    productId: "",
     date: eatDateTimeInput(),
+    shift: "day",
     openingReading: 0,
     closingReading: 0
   },
   monthEnd: {
-    stationId: "station-001",
-    productId: "product-petrol",
+    stationId: "",
+    productId: "",
     closedAt: eatDateTimeInput(),
     finalDipstickLiters: 0
   },
@@ -171,8 +200,22 @@ const emptyForms = {
     driverName: "",
     capacityLiters: 0,
     notes: ""
+  },
+  expense: {
+    stationId: "",
+    date: eatDateTimeInput(),
+    shift: "day",
+    category: EXPENSE_CATEGORIES[0],
+    description: "",
+    amount: 0,
+    paymentMethod: "cash"
   }
 };
+
+// ---------------------------------------------------------------------------
+// Local expense store (persisted in memory; backend can be wired later)
+// ---------------------------------------------------------------------------
+let _localExpenses = [];
 
 function App() {
   const [data, setData] = useState(null);
@@ -180,6 +223,7 @@ function App() {
   const [forms, setForms] = useState(emptyForms);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [expenses, setExpenses] = useState([]);
   const [databaseStatus, setDatabaseStatus] = useState({
     connected: false,
     configured: isSupabaseConfigured,
@@ -190,15 +234,23 @@ function App() {
     setError("");
     const bootstrap = await api.getBootstrap();
     setData(bootstrap);
+    setForms((current) => ({
+      ...current,
+      deposit: {
+        ...current.deposit,
+        lines: bootstrap.products.map((product) => ({
+          productId: product.id,
+          cashDeposited: 0,
+          pumpPrice: 0
+        }))
+      }
+    }));
+    setExpenses([..._localExpenses]);
     api
       .getDatabaseStatus()
       .then(setDatabaseStatus)
       .catch((err) =>
-        setDatabaseStatus({
-          connected: false,
-          configured: isSupabaseConfigured,
-          message: err.message
-        })
+        setDatabaseStatus({ connected: false, configured: isSupabaseConfigured, message: err.message })
       );
   };
 
@@ -207,25 +259,12 @@ function App() {
   }, []);
 
   const reference = useMemo(() => {
-    if (!data) {
-      return { stations: [], products: [], depotTrips: [], lorries: [] };
-    }
-    return {
-      stations: data.stations,
-      products: data.products,
-      depotTrips: data.depotTrips,
-      lorries: data.lorries
-    };
+    if (!data) return { stations: [], products: [], depotTrips: [], lorries: [] };
+    return { stations: data.stations, products: data.products, depotTrips: data.depotTrips, lorries: data.lorries };
   }, [data]);
 
   const updateForm = (key, field, value) => {
-    setForms((current) => ({
-      ...current,
-      [key]: {
-        ...current[key],
-        [field]: value
-      }
-    }));
+    setForms((current) => ({ ...current, [key]: { ...current[key], [field]: value } }));
   };
 
   const updateDepositLine = (productId, field, value) => {
@@ -258,6 +297,33 @@ function App() {
     }
   };
 
+  const submitExpense = () => {
+    setError("");
+    setNotice("");
+    const f = forms.expense;
+    if (!f.stationId) { setError("Please select a station."); return; }
+    if (Number(f.amount) <= 0) { setError("Amount must be greater than zero."); return; }
+    if (!f.description.trim()) { setError("Please enter a description."); return; }
+
+    const entry = {
+      id: `expense-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+      stationId: f.stationId,
+      date: eatInputToIso(f.date),
+      shift: f.shift,
+      category: f.category,
+      description: f.description.trim(),
+      amount: Number(f.amount),
+      paymentMethod: f.paymentMethod
+    };
+    _localExpenses = [entry, ..._localExpenses];
+    setExpenses([..._localExpenses]);
+    setNotice("Expense recorded.");
+    setForms((current) => ({
+      ...current,
+      expense: { ...emptyForms.expense, stationId: f.stationId, date: eatDateTimeInput() }
+    }));
+  };
+
   if (!data) {
     return (
       <main className="loading-shell">
@@ -274,6 +340,8 @@ function App() {
     updateForm,
     updateDepositLine,
     submit,
+    submitExpense,
+    expenses,
     databaseStatus
   };
 
@@ -333,6 +401,7 @@ function App() {
         {activeView === "deposits" && <Deposits {...activeProps} />}
         {activeView === "deliveries" && <Deliveries {...activeProps} />}
         {activeView === "depot" && <DepotTrips {...activeProps} />}
+        {activeView === "expenses" && <Expenses {...activeProps} />}
         {activeView === "variance" && <Variance {...activeProps} />}
         {activeView === "reports" && <Reports {...activeProps} />}
         {activeView === "setup" && <Setup {...activeProps} />}
@@ -341,8 +410,15 @@ function App() {
   );
 }
 
-function Dashboard({ data }) {
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+function Dashboard({ data, expenses }) {
   const { totals, cycleCards, recentDeposits } = data.dashboard;
+
+  const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
+  const netProfit = totals.grossProfit - totalExpenses;
+
   return (
     <section className="view-grid">
       <div className="metric-grid">
@@ -350,6 +426,8 @@ function Dashboard({ data }) {
         <Metric icon={Gauge} label="Fuel sold" value={liters(totals.fuelSold)} />
         <Metric icon={Droplets} label="Expected stock" value={liters(totals.expectedStock)} />
         <Metric icon={BarChart3} label="Gross profit" value={money(totals.grossProfit)} />
+        <Metric icon={Receipt} label="Total expenses" value={money(totalExpenses)} />
+        <Metric icon={BarChart3} label="Net profit / loss" value={money(netProfit)} highlight={netProfit < 0 ? "loss" : "profit"} />
       </div>
 
       <section className="section-band">
@@ -371,22 +449,10 @@ function Dashboard({ data }) {
                 <span style={{ width: `${cycle.stockPercent}%` }} />
               </div>
               <dl className="compact-list">
-                <div>
-                  <dt>Expected stock</dt>
-                  <dd>{liters(cycle.snapshot.expectedClosingStockLiters)}</dd>
-                </div>
-                <div>
-                  <dt>Cycle sales</dt>
-                  <dd>{liters(cycle.snapshot.estimatedLitersSold)}</dd>
-                </div>
-                <div>
-                  <dt>Blended cost</dt>
-                  <dd>{money(cycle.blendedCostPerLiter)} / L</dd>
-                </div>
-                <div>
-                  <dt>Opened</dt>
-                  <dd>{shortDate(cycle.openedAt)}</dd>
-                </div>
+                <div><dt>Expected stock</dt><dd>{liters(cycle.snapshot.expectedClosingStockLiters)}</dd></div>
+                <div><dt>Cycle sales</dt><dd>{liters(cycle.snapshot.estimatedLitersSold)}</dd></div>
+                <div><dt>Blended cost</dt><dd>{money(cycle.blendedCostPerLiter)} / L</dd></div>
+                <div><dt>Opened</dt><dd>{shortDate(cycle.openedAt)}</dd></div>
               </dl>
             </article>
           ))}
@@ -400,9 +466,11 @@ function Dashboard({ data }) {
             <p>Liters sold are estimated from deposited cash and active pump price.</p>
           </div>
           <DataTable
-            columns={["Station", "Date", "Cash", "Liters"]}
+            columns={["Station", "Shift", "Payment", "Date", "Cash", "Liters"]}
             rows={recentDeposits.map((deposit) => [
               stationName(data, deposit.stationId),
+              shiftBadge(deposit.shift),
+              paymentBadge(deposit.paymentMethod),
               shortDate(deposit.date),
               money(deposit.cashDeposited),
               liters(deposit.estimatedLitersSold)
@@ -420,9 +488,7 @@ function Dashboard({ data }) {
               return (
                 <div className={low ? "alert-row danger" : "alert-row"} key={cycle.id}>
                   <AlertTriangle size={18} />
-                  <span>
-                    {cycle.stationName}: {low ? "low stock risk" : "stock level normal"}
-                  </span>
+                  <span>{cycle.stationName}: {low ? "low stock risk" : "stock level normal"}</span>
                 </div>
               );
             })}
@@ -433,12 +499,15 @@ function Dashboard({ data }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Deposits — now with shift + payment method
+// ---------------------------------------------------------------------------
 function Deposits({ data, reference, forms, updateForm, updateDepositLine, submit }) {
   return (
     <section className="view-grid">
       <EntryPanel
         title="Daily sales settlement"
-        description="Enter one station and split the cash by product so liters and stock move correctly."
+        description="Enter one station and split the cash by product. Select the shift and how the money was received."
         icon={Banknote}
       >
         <FormGrid>
@@ -455,20 +524,47 @@ function Deposits({ data, reference, forms, updateForm, updateDepositLine, submi
             onChange={(value) => updateForm("deposit", "date", value)}
           />
         </FormGrid>
-        <ProductSettlementLines
-          data={data}
-          forms={forms}
-          updateDepositLine={updateDepositLine}
-        />
+
+        {/* Shift selector */}
+        <div className="shift-payment-row">
+          <div className="toggle-group">
+            <span className="toggle-label">Shift</span>
+            <div className="toggle-buttons">
+              {SHIFTS.map(({ value, label, icon: Icon }) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`toggle-btn${forms.deposit.shift === value ? " active" : ""}`}
+                  onClick={() => updateForm("deposit", "shift", value)}
+                >
+                  <Icon size={15} />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="toggle-group">
+            <span className="toggle-label">Payment method</span>
+            <div className="toggle-buttons">
+              {PAYMENT_METHODS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`toggle-btn${forms.deposit.paymentMethod === value ? " active" : ""}`}
+                  onClick={() => updateForm("deposit", "paymentMethod", value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <ProductSettlementLines data={data} forms={forms} updateDepositLine={updateDepositLine} />
         <p className="field-note">
-          If cash is brought as one mixed amount, management must split it by product using pump totals, attendant sheet,
-          or pump meter readings. Without that split, the system cannot know which tank sold how many liters.
+          If cash is brought as one mixed amount, management must split it by product using pump totals or attendant sheet.
         </p>
-        <ActionButton
-          onClick={() =>
-            submit("deposit", "/api/daily-deposit-settlements", "Daily sales settlement recorded.")
-          }
-        >
+        <ActionButton onClick={() => submit("deposit", "/api/daily-deposit-settlements", "Daily sales settlement recorded.")}>
           <Plus size={18} />
           Record settlement
         </ActionButton>
@@ -476,9 +572,11 @@ function Deposits({ data, reference, forms, updateForm, updateDepositLine, submi
 
       <DataTable
         title="Deposit history"
-        columns={["Station", "Product", "Cash", "Price", "Liters"]}
+        columns={["Station", "Shift", "Payment", "Product", "Cash", "Price", "Liters"]}
         rows={[...data.dailyDeposits].reverse().map((deposit) => [
           stationName(data, deposit.stationId),
+          shiftBadge(deposit.shift),
+          paymentBadge(deposit.paymentMethod),
           productName(data, deposit.productId),
           money(deposit.cashDeposited),
           money(deposit.pumpPrice),
@@ -489,6 +587,9 @@ function Deposits({ data, reference, forms, updateForm, updateDepositLine, submi
   );
 }
 
+// ---------------------------------------------------------------------------
+// Deliveries
+// ---------------------------------------------------------------------------
 function Deliveries({ data, reference, forms, updateForm, submit }) {
   const depotOptions = reference.depotTrips
     .filter((trip) => trip.productId === forms.delivery.productId)
@@ -505,46 +606,14 @@ function Deliveries({ data, reference, forms, updateForm, submit }) {
         icon={Truck}
       >
         <FormGrid>
-          <SelectField
-            label="Station"
-            value={forms.delivery.stationId}
-            onChange={(value) => updateForm("delivery", "stationId", value)}
-            options={reference.stations.map((item) => ({ value: item.id, label: item.name }))}
-          />
-          <SelectField
-            label="Product"
-            value={forms.delivery.productId}
-            onChange={(value) => updateForm("delivery", "productId", value)}
-            options={reference.products.map((item) => ({ value: item.id, label: item.name }))}
-          />
-          <SelectField
-            label="Linked depot trip"
-            value={forms.delivery.depotTripId}
-            onChange={(value) => updateForm("delivery", "depotTripId", value)}
-            options={depotOptions}
-          />
-          <InputField
-            label="Delivery timestamp"
-            type="datetime-local"
-            value={forms.delivery.deliveredAt}
-            onChange={(value) => updateForm("delivery", "deliveredAt", value)}
-          />
-          <InputField
-            label="Liters delivered"
-            type="number"
-            value={forms.delivery.litersDelivered}
-            onChange={(value) => updateForm("delivery", "litersDelivered", value)}
-          />
-          <InputField
-            label="Dipstick before closure"
-            type="number"
-            value={forms.delivery.preDeliveryDipstickLiters}
-            onChange={(value) => updateForm("delivery", "preDeliveryDipstickLiters", value)}
-          />
+          <SelectField label="Station" value={forms.delivery.stationId} onChange={(v) => updateForm("delivery", "stationId", v)} options={reference.stations.map((i) => ({ value: i.id, label: i.name }))} />
+          <SelectField label="Product" value={forms.delivery.productId} onChange={(v) => updateForm("delivery", "productId", v)} options={reference.products.map((i) => ({ value: i.id, label: i.name }))} />
+          <SelectField label="Linked depot trip" value={forms.delivery.depotTripId} onChange={(v) => updateForm("delivery", "depotTripId", v)} options={depotOptions} />
+          <InputField label="Delivery timestamp" type="datetime-local" value={forms.delivery.deliveredAt} onChange={(v) => updateForm("delivery", "deliveredAt", v)} />
+          <InputField label="Liters delivered" type="number" value={forms.delivery.litersDelivered} onChange={(v) => updateForm("delivery", "litersDelivered", v)} />
+          <InputField label="Dipstick before closure" type="number" value={forms.delivery.preDeliveryDipstickLiters} onChange={(v) => updateForm("delivery", "preDeliveryDipstickLiters", v)} />
         </FormGrid>
-        <p className="field-note">
-          This dipstick closes the old cycle. The new cycle opening stock is calculated from remaining fuel plus delivered fuel.
-        </p>
+        <p className="field-note">This dipstick closes the old cycle. New cycle opening stock = remaining fuel + delivered fuel.</p>
         <ActionButton onClick={() => submit("delivery", "/api/deliveries", "Delivery cycle recorded.")}>
           <ArrowDownUp size={18} />
           Close and open cycle
@@ -566,65 +635,23 @@ function Deliveries({ data, reference, forms, updateForm, submit }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Depot Trips
+// ---------------------------------------------------------------------------
 function DepotTrips({ data, reference, forms, updateForm, submit }) {
   return (
     <section className="view-grid">
-      <EntryPanel
-        title="Depot trip"
-        description="Purchasing and station delivery stay separate. Cost per liter is calculated by the backend."
-        icon={Factory}
-      >
+      <EntryPanel title="Depot trip" description="Purchasing and station delivery stay separate. Cost per liter is calculated by the backend." icon={Factory}>
         <FormGrid>
-          <InputField
-            label="Supplier"
-            value={forms.depot.supplier}
-            onChange={(value) => updateForm("depot", "supplier", value)}
-          />
-          <InputField
-            label="Supplier invoice / receipt ref"
-            value={forms.depot.invoiceNumber}
-            onChange={(value) => updateForm("depot", "invoiceNumber", value)}
-          />
-          <SelectField
-            label="Lorry"
-            value={forms.depot.lorryId}
-            onChange={(value) => updateForm("depot", "lorryId", value)}
-            options={[
-              { value: "", label: "Not assigned" },
-              ...reference.lorries.map((item) => ({
-                value: item.id,
-                label: `${item.plateNumber}${item.driverName ? ` - ${item.driverName}` : ""}`
-              }))
-            ]}
-          />
-          <SelectField
-            label="Product"
-            value={forms.depot.productId}
-            onChange={(value) => updateForm("depot", "productId", value)}
-            options={reference.products.map((item) => ({ value: item.id, label: item.name }))}
-          />
-          <InputField
-            label="Purchased at"
-            type="datetime-local"
-            value={forms.depot.purchasedAt}
-            onChange={(value) => updateForm("depot", "purchasedAt", value)}
-          />
-          <InputField
-            label="Liters purchased"
-            type="number"
-            value={forms.depot.litersPurchased}
-            onChange={(value) => updateForm("depot", "litersPurchased", value)}
-          />
-          <InputField
-            label="Total purchase cost"
-            type="number"
-            value={forms.depot.totalPurchaseCost}
-            onChange={(value) => updateForm("depot", "totalPurchaseCost", value)}
-          />
+          <InputField label="Supplier" value={forms.depot.supplier} onChange={(v) => updateForm("depot", "supplier", v)} />
+          <InputField label="Supplier invoice / receipt ref" value={forms.depot.invoiceNumber} onChange={(v) => updateForm("depot", "invoiceNumber", v)} />
+          <SelectField label="Lorry" value={forms.depot.lorryId} onChange={(v) => updateForm("depot", "lorryId", v)} options={[{ value: "", label: "Not assigned" }, ...reference.lorries.map((i) => ({ value: i.id, label: `${i.plateNumber}${i.driverName ? ` - ${i.driverName}` : ""}` }))]} />
+          <SelectField label="Product" value={forms.depot.productId} onChange={(v) => updateForm("depot", "productId", v)} options={reference.products.map((i) => ({ value: i.id, label: i.name }))} />
+          <InputField label="Purchased at" type="datetime-local" value={forms.depot.purchasedAt} onChange={(v) => updateForm("depot", "purchasedAt", v)} />
+          <InputField label="Liters purchased" type="number" value={forms.depot.litersPurchased} onChange={(v) => updateForm("depot", "litersPurchased", v)} />
+          <InputField label="Total purchase cost" type="number" value={forms.depot.totalPurchaseCost} onChange={(v) => updateForm("depot", "totalPurchaseCost", v)} />
         </FormGrid>
-        <p className="field-note">
-          Use the supplier invoice number, receipt number, or delivery note reference. It is the document number that proves the depot purchase.
-        </p>
+        <p className="field-note">Use the supplier invoice number or delivery note reference.</p>
         <ActionButton onClick={() => submit("depot", "/api/depot-trips", "Depot trip recorded.")}>
           <Plus size={18} />
           Add depot trip
@@ -647,6 +674,189 @@ function DepotTrips({ data, reference, forms, updateForm, submit }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Expenses (new section)
+// ---------------------------------------------------------------------------
+function Expenses({ data, reference, forms, updateForm, submitExpense, expenses }) {
+  const [filterStation, setFilterStation] = useState("");
+  const [filterShift, setFilterShift] = useState("");
+
+  const filtered = expenses.filter((e) => {
+    if (filterStation && e.stationId !== filterStation) return false;
+    if (filterShift && e.shift !== filterShift) return false;
+    return true;
+  });
+
+  const totalFiltered = filtered.reduce((s, e) => s + e.amount, 0);
+
+  // Per-shift summary
+  const dayTotal = expenses.filter((e) => e.shift === "day").reduce((s, e) => s + e.amount, 0);
+  const nightTotal = expenses.filter((e) => e.shift === "night").reduce((s, e) => s + e.amount, 0);
+
+  // Per-category breakdown
+  const byCategory = EXPENSE_CATEGORIES.map((cat) => ({
+    category: cat,
+    amount: expenses.filter((e) => e.category === cat).reduce((s, e) => s + e.amount, 0)
+  })).filter((row) => row.amount > 0);
+
+  return (
+    <section className="view-grid">
+      {/* Summary metrics */}
+      <div className="metric-grid">
+        <Metric icon={Receipt} label="Total expenses" value={money(expenses.reduce((s, e) => s + e.amount, 0))} />
+        <Metric icon={Sun} label="Day shift expenses" value={money(dayTotal)} />
+        <Metric icon={Moon} label="Night shift expenses" value={money(nightTotal)} />
+        <Metric icon={BarChart3} label="Expense records" value={expenses.length} />
+      </div>
+
+      <section className="section-band two-column">
+        {/* Entry form */}
+        <EntryPanel
+          title="Record expense"
+          description="Log any operating cost against a station and shift. These are used to calculate net profit."
+          icon={Receipt}
+        >
+          <FormGrid>
+            <SelectField
+              label="Station"
+              value={forms.expense.stationId}
+              onChange={(v) => updateForm("expense", "stationId", v)}
+              options={reference.stations.map((i) => ({ value: i.id, label: i.name }))}
+            />
+            <InputField
+              label="Date"
+              type="datetime-local"
+              value={forms.expense.date}
+              onChange={(v) => updateForm("expense", "date", v)}
+            />
+            <SelectField
+              label="Category"
+              value={forms.expense.category}
+              onChange={(v) => updateForm("expense", "category", v)}
+              options={EXPENSE_CATEGORIES.map((c) => ({ value: c, label: c }))}
+            />
+            <InputField
+              label="Amount (TZS)"
+              type="number"
+              value={forms.expense.amount}
+              onChange={(v) => updateForm("expense", "amount", v)}
+            />
+            <InputField
+              label="Description"
+              value={forms.expense.description}
+              onChange={(v) => updateForm("expense", "description", v)}
+            />
+          </FormGrid>
+
+          {/* Shift + Payment toggles */}
+          <div className="shift-payment-row">
+            <div className="toggle-group">
+              <span className="toggle-label">Shift</span>
+              <div className="toggle-buttons">
+                {SHIFTS.map(({ value, label, icon: Icon }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`toggle-btn${forms.expense.shift === value ? " active" : ""}`}
+                    onClick={() => updateForm("expense", "shift", value)}
+                  >
+                    <Icon size={15} />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="toggle-group">
+              <span className="toggle-label">Paid via</span>
+              <div className="toggle-buttons">
+                {PAYMENT_METHODS.map(({ value, label }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`toggle-btn${forms.expense.paymentMethod === value ? " active" : ""}`}
+                    onClick={() => updateForm("expense", "paymentMethod", value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <ActionButton onClick={submitExpense}>
+            <Plus size={18} />
+            Record expense
+          </ActionButton>
+        </EntryPanel>
+
+        {/* By category */}
+        <section className="entry-panel">
+          <div className="section-heading">
+            <div className="heading-with-icon">
+              <BarChart3 size={20} />
+              <h2>Breakdown by category</h2>
+            </div>
+            <p>Running totals across all stations and shifts.</p>
+          </div>
+          {byCategory.length ? (
+            <div className="expense-category-list">
+              {byCategory.sort((a, b) => b.amount - a.amount).map((row) => (
+                <div key={row.category} className="expense-category-row">
+                  <span>{row.category}</span>
+                  <strong>{money(row.amount)}</strong>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="field-note">No expenses recorded yet.</p>
+          )}
+        </section>
+      </section>
+
+      {/* Filter + table */}
+      <section className="entry-panel">
+        <div className="section-heading">
+          <h2>Expense log</h2>
+        </div>
+        <div className="expense-filter-row">
+          <SelectField
+            label="Filter by station"
+            value={filterStation}
+            onChange={setFilterStation}
+            options={[{ value: "", label: "All stations" }, ...reference.stations.map((i) => ({ value: i.id, label: i.name }))]}
+          />
+          <SelectField
+            label="Filter by shift"
+            value={filterShift}
+            onChange={setFilterShift}
+            options={[{ value: "", label: "All shifts" }, ...SHIFTS.map((s) => ({ value: s.value, label: s.label }))]}
+          />
+          <div className="expense-filter-total">
+            <span>Showing total</span>
+            <strong>{money(totalFiltered)}</strong>
+          </div>
+        </div>
+      </section>
+
+      <DataTable
+        columns={["Station", "Date", "Shift", "Category", "Description", "Payment", "Amount"]}
+        rows={filtered.map((e) => [
+          stationName(data, e.stationId),
+          shortDate(e.date),
+          shiftBadge(e.shift),
+          e.category,
+          e.description,
+          paymentBadge(e.paymentMethod),
+          money(e.amount)
+        ])}
+      />
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Product settlement lines
+// ---------------------------------------------------------------------------
 function ProductSettlementLines({ data, forms, updateDepositLine }) {
   return (
     <div className="settlement-lines">
@@ -672,6 +882,9 @@ function ProductSettlementLines({ data, forms, updateDepositLine }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
 function Setup({ reference, forms, updateForm, submit, databaseStatus }) {
   return (
     <section className="view-grid">
@@ -684,34 +897,12 @@ function Setup({ reference, forms, updateForm, submit, databaseStatus }) {
       </section>
 
       <section className="setup-tables two-column">
-        <EntryPanel
-          title="New petrol station"
-          description="Add stations before recording deliveries, deposits, and month-end closures."
-          icon={Building2}
-        >
+        <EntryPanel title="New petrol station" description="Add stations before recording deliveries, deposits, and month-end closures." icon={Building2}>
           <FormGrid>
-            <InputField
-              label="Station name"
-              value={forms.station.name}
-              onChange={(value) => updateForm("station", "name", value)}
-            />
-            <InputField
-              label="Location"
-              value={forms.station.location}
-              onChange={(value) => updateForm("station", "location", value)}
-            />
-            <InputField
-              label="Tank capacity"
-              type="number"
-              value={forms.station.tankCapacityLiters}
-              onChange={(value) => updateForm("station", "tankCapacityLiters", value)}
-            />
-            <InputField
-              label="Low-stock alert"
-              type="number"
-              value={forms.station.lowStockThresholdLiters}
-              onChange={(value) => updateForm("station", "lowStockThresholdLiters", value)}
-            />
+            <InputField label="Station name" value={forms.station.name} onChange={(v) => updateForm("station", "name", v)} />
+            <InputField label="Location" value={forms.station.location} onChange={(v) => updateForm("station", "location", v)} />
+            <InputField label="Tank capacity" type="number" value={forms.station.tankCapacityLiters} onChange={(v) => updateForm("station", "tankCapacityLiters", v)} />
+            <InputField label="Low-stock alert" type="number" value={forms.station.lowStockThresholdLiters} onChange={(v) => updateForm("station", "lowStockThresholdLiters", v)} />
           </FormGrid>
           <ActionButton onClick={() => submit("station", "/api/stations", "Petrol station added.")}>
             <Plus size={18} />
@@ -719,33 +910,12 @@ function Setup({ reference, forms, updateForm, submit, databaseStatus }) {
           </ActionButton>
         </EntryPanel>
 
-        <EntryPanel
-          title="New lorry"
-          description="Register the vehicle used for depot purchases and station deliveries."
-          icon={Truck}
-        >
+        <EntryPanel title="New lorry" description="Register the vehicle used for depot purchases and station deliveries." icon={Truck}>
           <FormGrid>
-            <InputField
-              label="Plate number"
-              value={forms.lorry.plateNumber}
-              onChange={(value) => updateForm("lorry", "plateNumber", value)}
-            />
-            <InputField
-              label="Driver"
-              value={forms.lorry.driverName}
-              onChange={(value) => updateForm("lorry", "driverName", value)}
-            />
-            <InputField
-              label="Capacity"
-              type="number"
-              value={forms.lorry.capacityLiters}
-              onChange={(value) => updateForm("lorry", "capacityLiters", value)}
-            />
-            <InputField
-              label="Notes"
-              value={forms.lorry.notes}
-              onChange={(value) => updateForm("lorry", "notes", value)}
-            />
+            <InputField label="Plate number" value={forms.lorry.plateNumber} onChange={(v) => updateForm("lorry", "plateNumber", v)} />
+            <InputField label="Driver" value={forms.lorry.driverName} onChange={(v) => updateForm("lorry", "driverName", v)} />
+            <InputField label="Capacity" type="number" value={forms.lorry.capacityLiters} onChange={(v) => updateForm("lorry", "capacityLiters", v)} />
+            <InputField label="Notes" value={forms.lorry.notes} onChange={(v) => updateForm("lorry", "notes", v)} />
           </FormGrid>
           <ActionButton onClick={() => submit("lorry", "/api/lorries", "Lorry added.")}>
             <Plus size={18} />
@@ -780,94 +950,72 @@ function Setup({ reference, forms, updateForm, submit, databaseStatus }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Variance
+// ---------------------------------------------------------------------------
 function Variance({ data, reference, forms, updateForm, submit }) {
   const closedCycles = data.cycles.filter((cycle) => cycle.status === "closed").reverse();
   return (
     <section className="view-grid">
       <section className="section-band two-column">
-        <EntryPanel
-          title="Internal fuel use"
-          description="Record generator, vehicle, testing, or calibration fuel before it becomes variance."
-          icon={ClipboardList}
-        >
+        <EntryPanel title="Internal fuel use" description="Record generator, vehicle, testing, or calibration fuel before it becomes variance." icon={ClipboardList}>
           <FormGrid>
-            <SelectField
-              label="Station"
-              value={forms.internal.stationId}
-              onChange={(value) => updateForm("internal", "stationId", value)}
-              options={reference.stations.map((item) => ({ value: item.id, label: item.name }))}
-            />
-            <SelectField
-              label="Product"
-              value={forms.internal.productId}
-              onChange={(value) => updateForm("internal", "productId", value)}
-              options={reference.products.map((item) => ({ value: item.id, label: item.name }))}
-            />
-            <InputField
-              label="Date"
-              type="datetime-local"
-              value={forms.internal.date}
-              onChange={(value) => updateForm("internal", "date", value)}
-            />
-            <InputField
-              label="Liters"
-              type="number"
-              value={forms.internal.liters}
-              onChange={(value) => updateForm("internal", "liters", value)}
-            />
-            <InputField
-              label="Reason"
-              value={forms.internal.reason}
-              onChange={(value) => updateForm("internal", "reason", value)}
-            />
+            <SelectField label="Station" value={forms.internal.stationId} onChange={(v) => updateForm("internal", "stationId", v)} options={reference.stations.map((i) => ({ value: i.id, label: i.name }))} />
+            <SelectField label="Product" value={forms.internal.productId} onChange={(v) => updateForm("internal", "productId", v)} options={reference.products.map((i) => ({ value: i.id, label: i.name }))} />
+            <InputField label="Date" type="datetime-local" value={forms.internal.date} onChange={(v) => updateForm("internal", "date", v)} />
+            <InputField label="Liters" type="number" value={forms.internal.liters} onChange={(v) => updateForm("internal", "liters", v)} />
+            <InputField label="Reason" value={forms.internal.reason} onChange={(v) => updateForm("internal", "reason", v)} />
           </FormGrid>
           <ActionButton onClick={() => submit("internal", "/api/internal-fuel-use", "Internal usage recorded.")}>
             <Plus size={18} />
             Record use
           </ActionButton>
+          <div className="toggle-group" style={{ marginBottom: '16px' }}>
+  <span className="toggle-label">Shift</span>
+  <div className="toggle-buttons">
+    {SHIFTS.map(({ value, label, icon: Icon }) => (
+      <button
+  key={value}
+  type="button"
+  className={`toggle-btn${forms.internal.shift === value ? " active" : ""}`}
+  onClick={() => updateForm("internal", "shift", value)} // Correct: Targets 'internal'
+>
+        <Icon size={15} />
+        {label}
+      </button>
+    ))}
+  </div>
+</div>
         </EntryPanel>
 
-        <EntryPanel
-          title="Pump meter reading"
-          description="Optional reconciliation layer for pumps with cumulative meter readings."
-          icon={Gauge}
-        >
+        <EntryPanel title="Pump meter reading" description="Optional reconciliation layer for pumps with cumulative meter readings." icon={Gauge}>
           <FormGrid>
-            <SelectField
-              label="Station"
-              value={forms.pump.stationId}
-              onChange={(value) => updateForm("pump", "stationId", value)}
-              options={reference.stations.map((item) => ({ value: item.id, label: item.name }))}
-            />
-            <SelectField
-              label="Product"
-              value={forms.pump.productId}
-              onChange={(value) => updateForm("pump", "productId", value)}
-              options={reference.products.map((item) => ({ value: item.id, label: item.name }))}
-            />
-            <InputField
-              label="Date"
-              type="datetime-local"
-              value={forms.pump.date}
-              onChange={(value) => updateForm("pump", "date", value)}
-            />
-            <InputField
-              label="Opening meter"
-              type="number"
-              value={forms.pump.openingReading}
-              onChange={(value) => updateForm("pump", "openingReading", value)}
-            />
-            <InputField
-              label="Closing meter"
-              type="number"
-              value={forms.pump.closingReading}
-              onChange={(value) => updateForm("pump", "closingReading", value)}
-            />
+            <SelectField label="Station" value={forms.pump.stationId} onChange={(v) => updateForm("pump", "stationId", v)} options={reference.stations.map((i) => ({ value: i.id, label: i.name }))} />
+            <SelectField label="Product" value={forms.pump.productId} onChange={(v) => updateForm("pump", "productId", v)} options={reference.products.map((i) => ({ value: i.id, label: i.name }))} />
+            <InputField label="Date" type="datetime-local" value={forms.pump.date} onChange={(v) => updateForm("pump", "date", v)} />
+            <InputField label="Opening meter" type="number" value={forms.pump.openingReading} onChange={(v) => updateForm("pump", "openingReading", v)} />
+            <InputField label="Closing meter" type="number" value={forms.pump.closingReading} onChange={(v) => updateForm("pump", "closingReading", v)} />
           </FormGrid>
           <ActionButton onClick={() => submit("pump", "/api/pump-meter-readings", "Pump reading recorded.")}>
             <Plus size={18} />
             Record meter
           </ActionButton>
+          <div className="toggle-group" style={{ marginBottom: '16px' }}>
+  <span className="toggle-label">Shift</span>
+  <div className="toggle-buttons">
+    {SHIFTS.map(({ value, label, icon: Icon }) => (
+      <button
+  key={value}
+  type="button"
+  className={`toggle-btn${forms.pump.shift === value ? " active" : ""}`}
+  onClick={() => updateForm("pump", "shift", value)} // Correct: Targets 'pump'
+>
+        <Icon size={15} />
+        {label}
+      </button>
+    ))}
+  </div>
+</div>
         </EntryPanel>
       </section>
 
@@ -887,55 +1035,97 @@ function Variance({ data, reference, forms, updateForm, submit }) {
   );
 }
 
-function Reports({ data, reference, forms, updateForm, submit }) {
+// ---------------------------------------------------------------------------
+// Reports — now includes expense deduction and shift P&L
+// ---------------------------------------------------------------------------
+function Reports({ data, reference, forms, updateForm, submit, expenses }) {
   const closedCycles = data.cycles.filter((cycle) => cycle.status === "closed");
   const revenue = closedCycles.reduce((sum, cycle) => sum + Number(cycle.revenue || 0), 0);
   const cogs = closedCycles.reduce((sum, cycle) => sum + Number(cycle.estimatedCogs || 0), 0);
-  const profit = closedCycles.reduce((sum, cycle) => sum + Number(cycle.grossProfit || 0), 0);
+  const grossProfit = closedCycles.reduce((sum, cycle) => sum + Number(cycle.grossProfit || 0), 0);
+  const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
+  const netProfit = grossProfit - totalExpenses;
+
+  // Shift P&L using live deposits
+  const allDeposits = data.dailyDeposits || [];
+  const shiftRevenue = (shift) => allDeposits
+    .filter((d) => (d.shift || "day") === shift)
+    .reduce((s, d) => s + Number(d.cashDeposited || 0), 0);
+  const shiftExpenses = (shift) => expenses
+    .filter((e) => e.shift === shift)
+    .reduce((s, e) => s + e.amount, 0);
+
+  const dayRev = shiftRevenue("day");
+  const nightRev = shiftRevenue("night");
+  const dayExp = shiftExpenses("day");
+  const nightExp = shiftExpenses("night");
+
+  // Per-station P&L
+  const stationSummary = (data.stations || []).map((station) => {
+    const stRev = allDeposits.filter((d) => d.stationId === station.id).reduce((s, d) => s + Number(d.cashDeposited || 0), 0);
+    const stExp = expenses.filter((e) => e.stationId === station.id).reduce((s, e) => s + e.amount, 0);
+    return { name: station.name, revenue: stRev, expenses: stExp, net: stRev - stExp };
+  });
 
   return (
     <section className="view-grid">
+      {/* Top metrics */}
       <div className="metric-grid">
         <Metric icon={WalletCards} label="Closed revenue" value={money(revenue)} />
         <Metric icon={Factory} label="Estimated COGS" value={money(cogs)} />
-        <Metric icon={BarChart3} label="Gross profit" value={money(profit)} />
+        <Metric icon={BarChart3} label="Gross profit" value={money(grossProfit)} />
+        <Metric icon={Receipt} label="Operating expenses" value={money(totalExpenses)} />
+        <Metric icon={BarChart3} label="Net profit / loss" value={money(netProfit)} highlight={netProfit < 0 ? "loss" : "profit"} />
         <Metric icon={AlertTriangle} label="Variance cycles" value={closedCycles.length} />
       </div>
 
-      <EntryPanel
-        title="Month-end closure"
-        description="Force-split the active cycle and roll the measured inventory forward."
-        icon={CalendarCheck}
-      >
+      {/* Shift P&L */}
+      <section className="section-band">
+        <div className="section-heading">
+          <h2>Shift profit & loss</h2>
+          <p>Revenue and expenses broken down by day and night shift.</p>
+        </div>
+        <div className="shift-pl-grid">
+          <div className="shift-pl-card day">
+            <div className="shift-pl-header"><Sun size={18} /><strong>Day Shift</strong></div>
+            <dl className="compact-list">
+              <div><dt>Revenue</dt><dd>{money(dayRev)}</dd></div>
+              <div><dt>Expenses</dt><dd>{money(dayExp)}</dd></div>
+              <div><dt>Net</dt><dd className={dayRev - dayExp < 0 ? "loss-text" : "profit-text"}>{money(dayRev - dayExp)}</dd></div>
+            </dl>
+          </div>
+          <div className="shift-pl-card night">
+            <div className="shift-pl-header"><Moon size={18} /><strong>Night Shift</strong></div>
+            <dl className="compact-list">
+              <div><dt>Revenue</dt><dd>{money(nightRev)}</dd></div>
+              <div><dt>Expenses</dt><dd>{money(nightExp)}</dd></div>
+              <div><dt>Net</dt><dd className={nightRev - nightExp < 0 ? "loss-text" : "profit-text"}>{money(nightRev - nightExp)}</dd></div>
+            </dl>
+          </div>
+        </div>
+      </section>
+
+      {/* Per-station summary */}
+      <DataTable
+        title="Net profit by station"
+        columns={["Station", "Revenue", "Expenses", "Net profit / loss"]}
+        rows={stationSummary.map((s) => [
+          s.name,
+          money(s.revenue),
+          money(s.expenses),
+          money(s.net)
+        ])}
+      />
+
+      {/* Month-end closure */}
+      <EntryPanel title="Month-end closure" description="Force-split the active cycle and roll the measured inventory forward." icon={CalendarCheck}>
         <FormGrid>
-          <SelectField
-            label="Station"
-            value={forms.monthEnd.stationId}
-            onChange={(value) => updateForm("monthEnd", "stationId", value)}
-            options={reference.stations.map((item) => ({ value: item.id, label: item.name }))}
-          />
-          <SelectField
-            label="Product"
-            value={forms.monthEnd.productId}
-            onChange={(value) => updateForm("monthEnd", "productId", value)}
-            options={reference.products.map((item) => ({ value: item.id, label: item.name }))}
-          />
-          <InputField
-            label="Closed at"
-            type="datetime-local"
-            value={forms.monthEnd.closedAt}
-            onChange={(value) => updateForm("monthEnd", "closedAt", value)}
-          />
-          <InputField
-            label="Final dipstick"
-            type="number"
-            value={forms.monthEnd.finalDipstickLiters}
-            onChange={(value) => updateForm("monthEnd", "finalDipstickLiters", value)}
-          />
+          <SelectField label="Station" value={forms.monthEnd.stationId} onChange={(v) => updateForm("monthEnd", "stationId", v)} options={reference.stations.map((i) => ({ value: i.id, label: i.name }))} />
+          <SelectField label="Product" value={forms.monthEnd.productId} onChange={(v) => updateForm("monthEnd", "productId", v)} options={reference.products.map((i) => ({ value: i.id, label: i.name }))} />
+          <InputField label="Closed at" type="datetime-local" value={forms.monthEnd.closedAt} onChange={(v) => updateForm("monthEnd", "closedAt", v)} />
+          <InputField label="Final dipstick" type="number" value={forms.monthEnd.finalDipstickLiters} onChange={(v) => updateForm("monthEnd", "finalDipstickLiters", v)} />
         </FormGrid>
-        <p className="field-note">
-          After rollover, there is no new opening dipstick. The backend carries the measured closing stock forward.
-        </p>
+        <p className="field-note">After rollover, the backend carries the measured closing stock forward.</p>
         <ActionButton onClick={() => submit("monthEnd", "/api/month-end-close", "Month-end rollover completed.")}>
           <CalendarCheck size={18} />
           Close period
@@ -945,7 +1135,7 @@ function Reports({ data, reference, forms, updateForm, submit }) {
       <DataTable
         title="Profit and loss by closed cycle"
         columns={["Station", "Product", "Revenue", "COGS", "Gross profit", "Variance"]}
-        rows={closedCycles.reverse().map((cycle) => [
+        rows={[...closedCycles].reverse().map((cycle) => [
           stationName(data, cycle.stationId),
           productName(data, cycle.productId),
           money(cycle.revenue),
@@ -958,9 +1148,12 @@ function Reports({ data, reference, forms, updateForm, submit }) {
   );
 }
 
-function Metric({ icon: Icon, label, value }) {
+// ---------------------------------------------------------------------------
+// Shared UI primitives
+// ---------------------------------------------------------------------------
+function Metric({ icon: Icon, label, value, highlight }) {
   return (
-    <article className="metric">
+    <article className={`metric${highlight ? ` metric-${highlight}` : ""}`}>
       <Icon size={22} />
       <span>{label}</span>
       <strong>{value}</strong>
@@ -991,7 +1184,7 @@ function InputField({ label, type = "text", value, onChange }) {
   return (
     <label className="field">
       <span>{label}</span>
-      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} />
+      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} />
     </label>
   );
 }
@@ -1000,11 +1193,9 @@ function SelectField({ label, value, onChange, options }) {
   return (
     <label className="field">
       <span>{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
+          <option key={option.value} value={option.value}>{option.label}</option>
         ))}
       </select>
     </label>
@@ -1022,33 +1213,21 @@ function ActionButton({ children, onClick }) {
 function DataTable({ title, columns, rows }) {
   return (
     <section className="table-section">
-      {title && (
-        <div className="section-heading">
-          <h2>{title}</h2>
-        </div>
-      )}
+      {title && <div className="section-heading"><h2>{title}</h2></div>}
       <div className="table-wrap">
         <table>
           <thead>
-            <tr>
-              {columns.map((column) => (
-                <th key={column}>{column}</th>
-              ))}
-            </tr>
+            <tr>{columns.map((col) => <th key={col}>{col}</th>)}</tr>
           </thead>
           <tbody>
             {rows.length ? (
-              rows.map((row, index) => (
-                <tr key={`${row.join("-")}-${index}`}>
-                  {row.map((cell, cellIndex) => (
-                    <td key={`${cell}-${cellIndex}`}>{cell}</td>
-                  ))}
+              rows.map((row, i) => (
+                <tr key={i}>
+                  {row.map((cell, j) => <td key={j}>{cell}</td>)}
                 </tr>
               ))
             ) : (
-              <tr>
-                <td colSpan={columns.length}>No records yet.</td>
-              </tr>
+              <tr><td colSpan={columns.length}>No records yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -1057,22 +1236,45 @@ function DataTable({ title, columns, rows }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Helper badge renderers
+// ---------------------------------------------------------------------------
+function shiftBadge(shift) {
+  if (!shift) return <span className="badge badge-day"><Sun size={11} /> Day</span>;
+  return shift === "night"
+    ? <span className="badge badge-night"><Moon size={11} /> Night</span>
+    : <span className="badge badge-day"><Sun size={11} /> Day</span>;
+}
+
+function paymentBadge(method) {
+  const map = {
+    cash: { label: "Cash", cls: "badge-cash" },
+    mobile_money: { label: "M-Money", cls: "badge-mobile" },
+    bank: { label: "Bank", cls: "badge-bank" }
+  };
+  const m = map[method] || map.cash;
+  return <span className={`badge ${m.cls}`}>{m.label}</span>;
+}
+
+// ---------------------------------------------------------------------------
+// Lookup helpers
+// ---------------------------------------------------------------------------
 function stationName(data, stationId) {
-  return data.stations.find((station) => station.id === stationId)?.name || "Unknown station";
+  return data.stations.find((s) => s.id === stationId)?.name || "Unknown station";
 }
 
 function productName(data, productId) {
-  return data.products.find((product) => product.id === productId)?.name || "Unknown product";
+  return data.products.find((p) => p.id === productId)?.name || "Unknown product";
 }
 
 function lorryName(data, lorryId) {
-  if (!lorryId) {
-    return "Not assigned";
-  }
-  const lorry = data.lorries.find((item) => item.id === lorryId);
-  return lorry ? lorry.plateNumber : "Unknown lorry";
+  if (!lorryId) return "Not assigned";
+  return data.lorries.find((l) => l.id === lorryId)?.plateNumber || "Unknown lorry";
 }
 
+// ---------------------------------------------------------------------------
+// Mount
+// ---------------------------------------------------------------------------
 const rootElement = document.getElementById("root");
 const root = window.__nzilabicheRoot || createRoot(rootElement);
 window.__nzilabicheRoot = root;

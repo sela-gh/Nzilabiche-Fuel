@@ -182,6 +182,8 @@ export const createDeposit = (state, payload) => {
     stationId: payload.stationId,
     productId: payload.productId,
     date: payload.date || new Date().toISOString(),
+    shift: payload.shift || "day",                 // Added: Captures shift
+    paymentMethod: payload.paymentMethod || "cash", // Added: Captures payment method
     cashDeposited: round(cashDeposited),
     pumpPrice: round(pumpPrice),
     estimatedLitersSold: round(cashDeposited / pumpPrice)
@@ -217,6 +219,8 @@ export const createDepositSettlement = (state, payload) => {
       stationId: payload.stationId,
       productId: line.productId,
       date: payload.date,
+      shift: payload.shift || "day",                 // Pass through shift
+      paymentMethod: payload.paymentMethod || "cash", // Pass through payment method
       cashDeposited: line.cashDeposited,
       pumpPrice: line.pumpPrice
     })
@@ -233,6 +237,7 @@ export const recordInternalFuelUse = (state, payload) => {
     stationId: payload.stationId,
     productId: payload.productId,
     date: payload.date || new Date().toISOString(),
+    shift: payload.shift || "day",
     liters: round(payload.liters),
     reason: payload.reason
   };
@@ -254,6 +259,7 @@ export const recordPumpMeterReading = (state, payload) => {
     stationId: payload.stationId,
     productId: payload.productId,
     date: payload.date || new Date().toISOString(),
+    shift: payload.shift || "day",
     openingReading: round(openingReading),
     closingReading: round(closingReading),
     dispensedLiters: round(closingReading - openingReading)
@@ -262,6 +268,44 @@ export const recordPumpMeterReading = (state, payload) => {
   state.pumpMeterReadings.push(reading);
   return reading;
 };
+
+export const createExpense = (state, payload) => {
+  const amount = Number(payload.amount);
+
+  if (!payload.stationId || !payload.category || !payload.description) {
+    throw new Error("Station, category, and description are required for expenses.");
+  }
+
+  if (amount <= 0) {
+    throw new Error("Expense amount must be greater than zero.");
+  }
+
+  const expense = {
+    id: id("expense"),
+    stationId: payload.stationId,
+    date: payload.date || new Date().toISOString(),
+    shift: payload.shift || "day",
+    category: payload.category,
+    description: payload.description,
+    amount: round(amount),
+    paymentMethod: payload.paymentMethod || "cash",
+    createdAt: new Date().toISOString()
+  };
+
+  state.expenses.push(expense);
+  
+  state.auditLogs.push({
+    id: id("audit"),
+    entity: "Expenses",
+    entityId: expense.id,
+    action: "created",
+    timestamp: expense.createdAt,
+    reason: `Expense recorded: ${expense.category}`
+  });
+
+  return expense;
+};
+
 
 export const recordDelivery = (state, payload) => {
   const deliveredAt = payload.deliveredAt || new Date().toISOString();
