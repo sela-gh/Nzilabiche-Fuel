@@ -2,6 +2,17 @@ import { supabase, isSupabaseConfigured } from "./supabase.js";
 import { createSeedState } from "./seed.js";
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Returns value if it is a real UUID, otherwise null.
+// Prevents empty strings reaching Supabase uuid columns.
+const uuid = (v) =>
+  v && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v))
+    ? v
+    : null;
+
+// ---------------------------------------------------------------------------
 // Column mappers — Supabase snake_case <-> app camelCase
 // ---------------------------------------------------------------------------
 
@@ -31,7 +42,7 @@ const mapDepotTrip = (row) => ({
   id: row.id,
   supplier: row.supplier_name,
   invoiceNumber: row.invoice_number,
-  lorryId: row.lorry_id || "",
+  lorryId: row.lorry_id || null,
   productId: row.product_id,
   litersPurchased: Number(row.total_liters || 0),
   totalPurchaseCost: Number(row.total_cost || 0),
@@ -43,7 +54,7 @@ const mapCycle = (row) => ({
   id: row.id,
   stationId: row.station_id,
   productId: row.product_id,
-  depotTripId: row.depot_trip_id,
+  depotTripId: row.depot_trip_id || null,
   status: row.status === "open" ? "active" : row.status,
   openedAt: row.opened_at,
   closedAt: row.closed_at,
@@ -51,15 +62,13 @@ const mapCycle = (row) => ({
   openingStockLiters: Number(row.opening_stock_liters || 0),
   deliveryLiters: Number(row.delivery_liters_app || 0),
   blendedCostPerLiter: Number(row.blended_cost_per_liter || 0),
-  expectedClosingStockLiters: row.expected_closing_stock_liters != null
-    ? Number(row.expected_closing_stock_liters)
-    : null,
-  actualDipstickLiters: row.actual_dipstick_liters != null
-    ? Number(row.actual_dipstick_liters)
-    : null,
-  varianceLiters: row.variance_liters != null
-    ? Number(row.variance_liters)
-    : null,
+  expectedClosingStockLiters:
+    row.expected_closing_stock_liters != null
+      ? Number(row.expected_closing_stock_liters)
+      : null,
+  actualDipstickLiters:
+    row.actual_dipstick_liters != null ? Number(row.actual_dipstick_liters) : null,
+  varianceLiters: row.variance_liters != null ? Number(row.variance_liters) : null,
   revenue: Number(row.revenue || 0),
   estimatedCogs: Number(row.estimated_cogs || 0),
   grossProfit: Number(row.gross_profit || 0)
@@ -122,17 +131,23 @@ const loadFromSupabase = async () => {
   const firstError = e1 || e2 || e3 || e4 || e5 || e6 || e7 || e8;
   if (firstError) throw new Error(firstError.message);
 
+  const mappedDepotTrips = (depotTrips || []).map(mapDepotTrip);
+  console.log("[loadFromSupabase] depot trip IDs:", mappedDepotTrips.map((t) => t.id));
+
   return {
     stations: (stations || []).map(mapStation),
     products: (products || []).map(mapProduct),
     lorries: (lorries || []).map(mapLorry),
-    depotTrips: (depotTrips || []).map(mapDepotTrip),
+    depotTrips: mappedDepotTrips,
     cycles: (cycles || []).map(mapCycle),
-    dailyDeposits: (deposits || []).filter(r => Number(r.cash_deposited || 0) > 0).map(mapDeposit),
+    dailyDeposits: (deposits || [])
+      .filter((r) => Number(r.cash_deposited || 0) > 0)
+      .map(mapDeposit),
     internalFuelUses: (internalUses || []).map(mapInternalUse),
     pumpMeterReadings: (pumpReadings || []).map(mapPumpReading),
     priceHistory: [],
-    auditLogs: []
+    auditLogs: [],
+    expenses: []
   };
 };
 
@@ -177,7 +192,7 @@ export const saveDepotTrip = async (trip) => {
     .insert({
       supplier_name: trip.supplier,
       invoice_number: trip.invoiceNumber,
-      lorry_id: trip.lorryId || null,
+      lorry_id: uuid(trip.lorryId),
       product_id: trip.productId,
       trip_date: trip.purchasedAt,
       total_liters: trip.litersPurchased,
@@ -210,12 +225,21 @@ export const saveDeposit = async (deposit) => {
 };
 
 export const saveCycle = async (cycle) => {
+  if (!uuid(cycle.stationId))
+    throw new Error("Station is required. Please select a station before recording a delivery.");
+  if (!uuid(cycle.productId))
+    throw new Error("Product is required. Please select a product before recording a delivery.");
+  if (!uuid(cycle.depotTripId))
+    throw new Error(
+      "Depot trip is required. Please select a depot trip that was created through the app."
+    );
+
   const { data, error } = await supabase
     .from("delivery_cycles")
     .insert({
-      station_id: cycle.stationId,
-      product_id: cycle.productId,
-      depot_trip_id: cycle.depotTripId,
+      station_id: uuid(cycle.stationId),
+      product_id: uuid(cycle.productId),
+      depot_trip_id: uuid(cycle.depotTripId),
       status: cycle.status === "active" ? "open" : cycle.status,
       opened_at: cycle.openedAt,
       closed_at: cycle.closedAt,
@@ -229,7 +253,6 @@ export const saveCycle = async (cycle) => {
       revenue: cycle.revenue,
       estimated_cogs: cycle.estimatedCogs,
       gross_profit: cycle.grossProfit,
-      // required not-null columns from original schema
       cycle_start_date: cycle.openedAt,
       opening_liters: cycle.openingStockLiters,
       opening_cost_per_liter: cycle.blendedCostPerLiter,
@@ -242,6 +265,7 @@ export const saveCycle = async (cycle) => {
 };
 
 export const updateCycle = async (cycle) => {
+  console.log("[updateCycle] id:", cycle.id);
   const { error } = await supabase
     .from("delivery_cycles")
     .update({
@@ -298,14 +322,10 @@ export const savePumpReading = async (reading) => {
 };
 
 // ---------------------------------------------------------------------------
-// Public API — replaces the old file-based store
+// Public API
 // ---------------------------------------------------------------------------
 
 export const loadState = async () => {
-  console.log("isSupabaseConfigured:", isSupabaseConfigured);
-  console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
-  console.log("SUPABASE_ANON_KEY:", process.env.SUPABASE_ANON_KEY ? "set" : "missing");
-
   if (!isSupabaseConfigured) {
     console.warn("Supabase not configured — falling back to seed state.");
     return createSeedState();
@@ -313,10 +333,6 @@ export const loadState = async () => {
   return loadFromSupabase();
 };
 
-// withState now loads fresh from Supabase, runs the handler against an
-// in-memory copy, then persists only the changes via the save* helpers.
-// domain.js mutates the state object directly, so we intercept saves by
-// wrapping the state in a Proxy that tracks which collections changed.
 export const withState = async (handler) => {
   const state = await loadState();
   const changed = new Set();
@@ -344,29 +360,40 @@ export const withState = async (handler) => {
 
   const result = await handler(proxy);
 
-  // Persist only new items added during this operation
   const lastOf = (arr) => arr[arr.length - 1];
 
   if (changed.has("stations")) await saveStation(lastOf(state.stations));
   if (changed.has("lorries")) await saveLorry(lastOf(state.lorries));
   if (changed.has("depotTrips")) await saveDepotTrip(lastOf(state.depotTrips));
+
   if (changed.has("dailyDeposits")) {
-    // deposit settlement can push multiple lines
     const newDeposits = state.dailyDeposits.slice(-result.length || -1);
     for (const d of Array.isArray(result) ? newDeposits : [lastOf(state.dailyDeposits)]) {
       await saveDeposit(d);
     }
   }
+
   if (changed.has("cycles")) {
     const newCycle = lastOf(state.cycles);
-    // The previous cycle was mutated (closed) — find and update it
-    const closedCycle = state.cycles.find(
-      (c) => c.status === "closed" && c.id !== newCycle.id &&
-      c.stationId === newCycle.stationId && c.productId === newCycle.productId
+    console.log("[withState] newCycle:", JSON.stringify(newCycle));
+
+    // domain.js mutates the previously-active cycle in place (closeCycle sets
+    // closedAt = deliveredAt, which becomes newCycle.openedAt). The Proxy only
+    // tracks .push(), not property mutations, so match by timestamp.
+    // uuid() guard ensures we never call updateCycle on a seed/local row.
+    const mutatedCycles = state.cycles.filter(
+      (c) =>
+        c.id !== newCycle.id &&
+        c.status === "closed" &&
+        c.closedAt === newCycle.openedAt &&
+        uuid(c.id) !== null
     );
-    if (closedCycle) await updateCycle(closedCycle);
+    console.log("[withState] cycles to update:", mutatedCycles.map((c) => c.id));
+    for (const c of mutatedCycles) await updateCycle(c);
+
     await saveCycle(newCycle);
   }
+
   if (changed.has("internalFuelUses")) await saveInternalUse(lastOf(state.internalFuelUses));
   if (changed.has("pumpMeterReadings")) await savePumpReading(lastOf(state.pumpMeterReadings));
 

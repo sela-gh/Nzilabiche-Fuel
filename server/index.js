@@ -34,11 +34,7 @@ const readJsonBody = async (req) => {
   for await (const chunk of req) {
     chunks.push(chunk);
   }
-
-  if (!chunks.length) {
-    return {};
-  }
-
+  if (!chunks.length) return {};
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 };
 
@@ -95,6 +91,7 @@ const handleApi = async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/deliveries") {
       const payload = await readJsonBody(req);
+      console.log("[delivery] payload:", JSON.stringify(payload));
       const result = await withState((state) => recordDelivery(state, payload));
       sendJson(res, 201, result);
       return;
@@ -123,6 +120,7 @@ const handleApi = async (req, res) => {
 
     sendJson(res, 404, { error: "Route not found." });
   } catch (error) {
+    console.error("[api error]", error.message);
     sendJson(res, 400, { error: error.message || "Request failed." });
   }
 };
@@ -141,7 +139,6 @@ const serveStatic = async (req, res) => {
       ".css": "text/css",
       ".svg": "image/svg+xml"
     };
-
     res.writeHead(200, { "Content-Type": contentTypes[ext] || "application/octet-stream" });
     res.end(contents);
   } catch {
@@ -155,7 +152,6 @@ const server = http.createServer(async (req, res) => {
     await handleApi(req, res);
     return;
   }
-
   await serveStatic(req, res);
 });
 

@@ -234,15 +234,44 @@ function App() {
     setError("");
     const bootstrap = await api.getBootstrap();
     setData(bootstrap);
+    const firstStation = bootstrap.stations[0]?.id || "";
+    const firstProduct = bootstrap.products[0]?.id || "";
+    const firstLorry = bootstrap.lorries[0]?.id || "";
     setForms((current) => ({
       ...current,
       deposit: {
         ...current.deposit,
+        stationId: current.deposit.stationId || firstStation,
         lines: bootstrap.products.map((product) => ({
           productId: product.id,
           cashDeposited: 0,
           pumpPrice: 0
         }))
+      },
+      depot: {
+        ...current.depot,
+        lorryId: current.depot.lorryId || firstLorry,
+        productId: current.depot.productId || firstProduct
+      },
+      delivery: {
+        ...current.delivery,
+        stationId: current.delivery.stationId || firstStation,
+        productId: current.delivery.productId || firstProduct
+      },
+      internal: {
+        ...current.internal,
+        stationId: current.internal.stationId || firstStation,
+        productId: current.internal.productId || firstProduct
+      },
+      pump: {
+        ...current.pump,
+        stationId: current.pump.stationId || firstStation,
+        productId: current.pump.productId || firstProduct
+      },
+      monthEnd: {
+        ...current.monthEnd,
+        stationId: current.monthEnd.stationId || firstStation,
+        productId: current.monthEnd.productId || firstProduct
       }
     }));
     setExpenses([..._localExpenses]);
@@ -591,12 +620,15 @@ function Deposits({ data, reference, forms, updateForm, updateDepositLine, submi
 // Deliveries
 // ---------------------------------------------------------------------------
 function Deliveries({ data, reference, forms, updateForm, submit }) {
-  const depotOptions = reference.depotTrips
-    .filter((trip) => trip.productId === forms.delivery.productId)
-    .map((trip) => ({
-      value: trip.id,
-      label: `${trip.invoiceNumber} - ${productName(data, trip.productId)} @ ${money(trip.costPerLiter)}`
-    }));
+  const depotOptions = [
+    { value: "", label: "-- Select a linked depot trip --" },
+    ...reference.depotTrips
+      .filter((trip) => trip.productId === forms.delivery.productId)
+      .map((trip) => ({
+        value: trip.id,
+        label: `${trip.invoiceNumber} - ${productName(data, trip.productId)} @ ${money(trip.costPerLiter)}`
+      }))
+  ];
 
   return (
     <section className="view-grid">
