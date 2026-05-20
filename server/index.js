@@ -24,7 +24,11 @@ const port = Number(process.env.PORT || 4040);
 const sendJson = (res, status, body) => {
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Cache-Control": "no-store"
+    "Cache-Control": "no-store",
+    // ADD THESE THREE LINES FOR CORS:
+    "Access-Control-Allow-Origin": "*", // Allows any website to connect (or put your Netlify URL here)
+    "Access-Control-Allow-Methods": "OPTIONS, POST, GET",
+    "Access-Control-Allow-Headers": "Content-Type"
   });
   res.end(JSON.stringify(body));
 };
@@ -148,13 +152,23 @@ const serveStatic = async (req, res) => {
 };
 
 const server = http.createServer(async (req, res) => {
+  // Browsers send an "OPTIONS" request first to check CORS security. We must say "OK" (204).
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "OPTIONS, POST, GET",
+      "Access-Control-Allow-Headers": "Content-Type"
+    });
+    res.end();
+    return;
+  }
+
   if (req.url.startsWith("/api")) {
     await handleApi(req, res);
     return;
   }
   await serveStatic(req, res);
 });
-
-server.listen(port, "127.0.0.1", () => {
-  console.log(`Nzilabiche Fuel API running at http://127.0.0.1:${port}`);
+server.listen(port, "0.0.0.0", () => {
+  console.log(`Nzilabiche Fuel API running on port ${port}`);
 });
