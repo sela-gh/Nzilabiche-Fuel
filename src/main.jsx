@@ -42,6 +42,8 @@ const PAYMENT_METHODS = [
   { value: "bank", label: "Bank Transfer" }
 ];
 
+const DEBT_EXPENSE_CATEGORY = "Debt";
+
 const EXPENSE_CATEGORIES = [
   "Salaries & Wages",
   "Electricity",
@@ -54,6 +56,7 @@ const EXPENSE_CATEGORIES = [
   "Supplies & Consumables",
   "Tax & Levies",
   "Insurance",
+  DEBT_EXPENSE_CATEGORY,
   "Other"
 ];
 
@@ -78,6 +81,23 @@ const shortDate = (value) =>
         timeZoneName: "short"
       }).format(new Date(value))
     : "Not set";
+
+const eatDateKey = (value) => {
+  if (!value) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  })
+    .formatToParts(new Date(value))
+    .reduce((acc, part) => {
+      acc[part.type] = part.value;
+      return acc;
+    }, {});
+
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
 
 const eatDateTimeInput = (date = new Date()) => {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -209,6 +229,22 @@ const emptyForms = {
     description: "",
     amount: 0,
     paymentMethod: "cash"
+  },
+  debtIssue: {
+    stationId: "",
+    date: eatDateTimeInput(),
+    shift: "day",
+    debtorName: "",
+    description: "",
+    amount: 0,
+    paymentMethod: "cash"
+  },
+  debtSettlement: {
+    debtId: "",
+    settledAt: eatDateTimeInput(),
+    amount: 0,
+    paymentMethod: "cash",
+    note: ""
   }
 };
 
@@ -216,6 +252,7 @@ const emptyForms = {
 // Local expense store (persisted in memory; backend can be wired later)
 // ---------------------------------------------------------------------------
 let _localExpenses = [];
+let _localDebts = [];
 
 function App() {
   const [data, setData] = useState(null);
@@ -224,6 +261,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [expenses, setExpenses] = useState([]);
+  const [debts, setDebts] = useState([]);
   const [databaseStatus, setDatabaseStatus] = useState({
     connected: false,
     configured: isSupabaseConfigured,
@@ -272,9 +310,18 @@ function App() {
         ...current.monthEnd,
         stationId: current.monthEnd.stationId || firstStation,
         productId: current.monthEnd.productId || firstProduct
+      },
+      expense: {
+        ...current.expense,
+        stationId: current.expense.stationId || firstStation
+      },
+      debtIssue: {
+        ...current.debtIssue,
+        stationId: current.debtIssue.stationId || firstStation
       }
     }));
     setExpenses([..._localExpenses]);
+    setDebts([..._localDebts]);
     api
       .getDatabaseStatus()
       .then(setDatabaseStatus)
@@ -353,6 +400,148 @@ function App() {
     }));
   };
 
+  const submitDebtIssue = () => {
+    setError("");
+    setNotice("");
+    const f = forms.debtIssue;
+    const debtorName = f.debtorName.trim();
+    const description = f.description.trim();
+    const amount = Number(f.amount);
+
+    if (!f.stationId) { setError("Please select a station for the debt."); return; }
+    if (!debtorName) { setError("Please enter who received the debt."); return; }
+    if (!description) { setError("Please enter what the debt was for."); return; }
+    if (amount <= 0) { setError("Debt amount must be greater than zero."); return; }
+
+    const issuedAt = eatInputToIso(f.date);
+    const issueEntry = {
+      id: `debt-entry-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+      type: "issued",
+      date: issuedAt,
+      amount,
+      shift: f.shift,
+      paymentMethod: f.paymentMethod,
+      note: description
+    };
+    const debtorKey = debtorName.toLowerCase();
+    const existingIndex = _localDebts.findIndex(
+      (debt) => debt.status === "open" && debt.stationId === f.stationId && debt.debtorName.toLowerCase() === debtorKey
+    );
+    let debtId;
+
+    if (existingIndex >= 0) {
+      const existing = _localDebts[existingIndex];
+      debtId = existing.id;
+      _localDebts = [
+        {
+          ...existing,
+          principalAmount: existing.principalAmount + amount,
+          outstandingAmount: existing.outstandingAmount + amount,
+          lastActivityAt: issuedAt,
+          entries: [issueEntry, ...existing.entries]
+        },
+        ..._localDebts.filter((_, index) => index !== existingIndex)
+      ];
+    } else {
+      debtId = `debt-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+      _localDebts = [
+        {
+          id: debtId,
+          stationId: f.stationId,
+          debtorName,
+          description,
+          issuedAt,
+          lastActivityAt: issuedAt,
+          shift: f.shift,
+          principalAmount: amount,
+          outstandingAmount: amount,
+          paymentMethod: f.paymentMethod,
+          status: "open",
+          entries: [issueEntry]
+        },
+        ..._localDebts
+      ];
+    }
+
+    const expenseEntry = {
+      id: `expense-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+      stationId: f.stationId,
+      date: issuedAt,
+      shift: f.shift,
+      category: DEBT_EXPENSE_CATEGORY,
+      description: `Debt to ${debtorName}: ${description}`,
+      amount,
+      paymentMethod: f.paymentMethod,
+      debtId
+    };
+    _localExpenses = [expenseEntry, ..._localExpenses];
+    setExpenses([..._localExpenses]);
+    setDebts([..._localDebts]);
+    setNotice("Debt recorded and added to expenses.");
+    setForms((current) => ({
+      ...current,
+      debtIssue: {
+        ...emptyForms.debtIssue,
+        stationId: f.stationId,
+        date: eatDateTimeInput(),
+        paymentMethod: f.paymentMethod
+      },
+      debtSettlement: {
+        ...current.debtSettlement,
+        debtId
+      }
+    }));
+  };
+
+  const submitDebtSettlement = () => {
+    setError("");
+    setNotice("");
+    const f = forms.debtSettlement;
+    const amount = Number(f.amount);
+    const debt = _localDebts.find((item) => item.id === f.debtId);
+
+    if (!debt) { setError("Please select an open debt to settle."); return; }
+    if (amount <= 0) { setError("Settlement amount must be greater than zero."); return; }
+    if (amount > debt.outstandingAmount) {
+      setError(`Settlement cannot exceed the outstanding balance of ${money(debt.outstandingAmount)}.`);
+      return;
+    }
+
+    const settledAt = eatInputToIso(f.settledAt);
+    const remaining = Math.max(0, debt.outstandingAmount - amount);
+    const settlementEntry = {
+      id: `debt-entry-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+      type: "settled",
+      date: settledAt,
+      amount,
+      paymentMethod: f.paymentMethod,
+      note: f.note.trim()
+    };
+
+    _localDebts = _localDebts.map((item) =>
+      item.id === debt.id
+        ? {
+            ...item,
+            outstandingAmount: remaining,
+            status: remaining === 0 ? "settled" : "open",
+            lastActivityAt: settledAt,
+            entries: [settlementEntry, ...item.entries]
+          }
+        : item
+    );
+    setDebts([..._localDebts]);
+    setNotice(remaining === 0 ? "Debt fully settled." : "Debt settlement recorded.");
+    setForms((current) => ({
+      ...current,
+      debtSettlement: {
+        ...emptyForms.debtSettlement,
+        debtId: _localDebts.find((item) => item.status === "open")?.id || "",
+        settledAt: eatDateTimeInput(),
+        paymentMethod: f.paymentMethod
+      }
+    }));
+  };
+
   if (!data) {
     return (
       <main className="loading-shell">
@@ -370,7 +559,10 @@ function App() {
     updateDepositLine,
     submit,
     submitExpense,
+    submitDebtIssue,
+    submitDebtSettlement,
     expenses,
+    debts,
     databaseStatus
   };
 
@@ -707,19 +899,38 @@ function DepotTrips({ data, reference, forms, updateForm, submit }) {
 }
 
 // ---------------------------------------------------------------------------
-// Expenses (new section)
+// Expenses
 // ---------------------------------------------------------------------------
-function Expenses({ data, reference, forms, updateForm, submitExpense, expenses }) {
+function Expenses({
+  data,
+  reference,
+  forms,
+  updateForm,
+  submitExpense,
+  submitDebtIssue,
+  submitDebtSettlement,
+  expenses,
+  debts
+}) {
   const [filterStation, setFilterStation] = useState("");
   const [filterShift, setFilterShift] = useState("");
+  const [filterDate, setFilterDate] = useState("");
 
   const filtered = expenses.filter((e) => {
     if (filterStation && e.stationId !== filterStation) return false;
     if (filterShift && e.shift !== filterShift) return false;
+    if (filterDate && eatDateKey(e.date) !== filterDate) return false;
     return true;
   });
 
   const totalFiltered = filtered.reduce((s, e) => s + e.amount, 0);
+  const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
+  const debtIssuedTotal = expenses
+    .filter((e) => e.category === DEBT_EXPENSE_CATEGORY)
+    .reduce((s, e) => s + e.amount, 0);
+  const openDebts = debts.filter((debt) => debt.status === "open" && debt.outstandingAmount > 0);
+  const outstandingDebt = openDebts.reduce((s, debt) => s + debt.outstandingAmount, 0);
+  const selectedDebt = openDebts.find((debt) => debt.id === forms.debtSettlement.debtId);
 
   // Per-shift summary
   const dayTotal = expenses.filter((e) => e.shift === "day").reduce((s, e) => s + e.amount, 0);
@@ -735,7 +946,9 @@ function Expenses({ data, reference, forms, updateForm, submitExpense, expenses 
     <section className="view-grid">
       {/* Summary metrics */}
       <div className="metric-grid">
-        <Metric icon={Receipt} label="Total expenses" value={money(expenses.reduce((s, e) => s + e.amount, 0))} />
+        <Metric icon={Receipt} label="Total expenses" value={money(totalExpenses)} />
+        <Metric icon={CreditCard} label="Debt issued" value={money(debtIssuedTotal)} />
+        <Metric icon={WalletCards} label="Debt outstanding" value={money(outstandingDebt)} />
         <Metric icon={Sun} label="Day shift expenses" value={money(dayTotal)} />
         <Metric icon={Moon} label="Night shift expenses" value={money(nightTotal)} />
         <Metric icon={BarChart3} label="Expense records" value={expenses.length} />
@@ -845,10 +1058,169 @@ function Expenses({ data, reference, forms, updateForm, submitExpense, expenses 
         </section>
       </section>
 
+      <section className="section-band two-column">
+        <EntryPanel
+          title="Issue debt"
+          description="Record money or goods given on debt. The issued amount is counted as an expense on that day."
+          icon={CreditCard}
+        >
+          <FormGrid>
+            <SelectField
+              label="Station"
+              value={forms.debtIssue.stationId}
+              onChange={(v) => updateForm("debtIssue", "stationId", v)}
+              options={reference.stations.map((i) => ({ value: i.id, label: i.name }))}
+            />
+            <InputField
+              label="Debt date"
+              type="datetime-local"
+              value={forms.debtIssue.date}
+              onChange={(v) => updateForm("debtIssue", "date", v)}
+            />
+            <InputField
+              label="Debtor"
+              value={forms.debtIssue.debtorName}
+              onChange={(v) => updateForm("debtIssue", "debtorName", v)}
+            />
+            <InputField
+              label="Amount (TZS)"
+              type="number"
+              value={forms.debtIssue.amount}
+              onChange={(v) => updateForm("debtIssue", "amount", v)}
+            />
+            <InputField
+              label="Reason"
+              value={forms.debtIssue.description}
+              onChange={(v) => updateForm("debtIssue", "description", v)}
+            />
+          </FormGrid>
+
+          <div className="shift-payment-row">
+            <div className="toggle-group">
+              <span className="toggle-label">Shift</span>
+              <div className="toggle-buttons">
+                {SHIFTS.map(({ value, label, icon: Icon }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`toggle-btn${forms.debtIssue.shift === value ? " active" : ""}`}
+                    onClick={() => updateForm("debtIssue", "shift", value)}
+                  >
+                    <Icon size={15} />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="toggle-group">
+              <span className="toggle-label">Issued via</span>
+              <div className="toggle-buttons">
+                {PAYMENT_METHODS.map(({ value, label }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`toggle-btn${forms.debtIssue.paymentMethod === value ? " active" : ""}`}
+                    onClick={() => updateForm("debtIssue", "paymentMethod", value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <ActionButton onClick={submitDebtIssue}>
+            <Plus size={18} />
+            Record debt
+          </ActionButton>
+        </EntryPanel>
+
+        <EntryPanel
+          title="Settle debt"
+          description="Record a payment against an open debt. Partial payments reduce the balance and keep the debt open."
+          icon={ArrowDownUp}
+        >
+          <FormGrid>
+            <SelectField
+              label="Open debt"
+              value={forms.debtSettlement.debtId}
+              onChange={(v) => updateForm("debtSettlement", "debtId", v)}
+              options={[
+                { value: "", label: "Select open debt" },
+                ...openDebts.map((debt) => ({
+                  value: debt.id,
+                  label: `${debt.debtorName} - ${money(debt.outstandingAmount)}`
+                }))
+              ]}
+            />
+            <InputField
+              label="Settlement date"
+              type="datetime-local"
+              value={forms.debtSettlement.settledAt}
+              onChange={(v) => updateForm("debtSettlement", "settledAt", v)}
+            />
+            <InputField
+              label="Amount settled"
+              type="number"
+              value={forms.debtSettlement.amount}
+              onChange={(v) => updateForm("debtSettlement", "amount", v)}
+            />
+            <InputField
+              label="Note"
+              value={forms.debtSettlement.note}
+              onChange={(v) => updateForm("debtSettlement", "note", v)}
+            />
+          </FormGrid>
+
+          <div className="debt-balance-strip">
+            <span>Selected balance</span>
+            <strong>{selectedDebt ? money(selectedDebt.outstandingAmount) : money(0)}</strong>
+          </div>
+
+          <div className="shift-payment-row">
+            <div className="toggle-group">
+              <span className="toggle-label">Received via</span>
+              <div className="toggle-buttons">
+                {PAYMENT_METHODS.map(({ value, label }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`toggle-btn${forms.debtSettlement.paymentMethod === value ? " active" : ""}`}
+                    onClick={() => updateForm("debtSettlement", "paymentMethod", value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <ActionButton onClick={submitDebtSettlement} disabled={!openDebts.length}>
+            <ArrowDownUp size={18} />
+            Record settlement
+          </ActionButton>
+        </EntryPanel>
+      </section>
+
+      <DataTable
+        title="Debt ledger"
+        columns={["Debtor", "Station", "Last activity", "Issued", "Settled", "Outstanding", "Status"]}
+        rows={debts.map((debt) => [
+          debt.debtorName,
+          stationName(data, debt.stationId),
+          shortDate(debt.lastActivityAt),
+          money(debt.principalAmount),
+          money(debt.principalAmount - debt.outstandingAmount),
+          money(debt.outstandingAmount),
+          debtStatusBadge(debt.status)
+        ])}
+      />
+
       {/* Filter + table */}
       <section className="entry-panel">
         <div className="section-heading">
           <h2>Expense log</h2>
+          <p>Daily totals include any debts issued on the selected day.</p>
         </div>
         <div className="expense-filter-row">
           <SelectField
@@ -863,8 +1235,14 @@ function Expenses({ data, reference, forms, updateForm, submitExpense, expenses 
             onChange={setFilterShift}
             options={[{ value: "", label: "All shifts" }, ...SHIFTS.map((s) => ({ value: s.value, label: s.label }))]}
           />
+          <InputField
+            label="Filter by day"
+            type="date"
+            value={filterDate}
+            onChange={setFilterDate}
+          />
           <div className="expense-filter-total">
-            <span>Showing total</span>
+            <span>Showing expense total</span>
             <strong>{money(totalFiltered)}</strong>
           </div>
         </div>
@@ -1234,9 +1612,9 @@ function SelectField({ label, value, onChange, options }) {
   );
 }
 
-function ActionButton({ children, onClick }) {
+function ActionButton({ children, onClick, disabled = false }) {
   return (
-    <button className="action-button" type="button" onClick={onClick}>
+    <button className="action-button" type="button" onClick={onClick} disabled={disabled}>
       {children}
     </button>
   );
@@ -1286,6 +1664,12 @@ function paymentBadge(method) {
   };
   const m = map[method] || map.cash;
   return <span className={`badge ${m.cls}`}>{m.label}</span>;
+}
+
+function debtStatusBadge(status) {
+  return status === "settled"
+    ? <span className="badge badge-cash">Settled</span>
+    : <span className="badge badge-debt">Open</span>;
 }
 
 // ---------------------------------------------------------------------------
