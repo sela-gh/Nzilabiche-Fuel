@@ -103,6 +103,45 @@ const mapPumpReading = (row) => ({
   dispensedLiters: Number(row.dispensed_liters || 0)
 });
 
+
+const mapExpense = (row) => ({
+  id: row.id,
+  stationId: row.station_id,
+  date: row.date,
+  shift: row.shift || 'day',
+  category: row.category,
+  description: row.description,
+  amount: Number(row.amount || 0),
+  paymentMethod: row.payment_method || 'cash',
+  debtId: row.debt_id || null,
+  createdAt: row.created_at
+});
+
+const mapDebt = (row) => ({
+  id: row.id,
+  stationId: row.station_id,
+  debtorName: row.debtor_name,
+  description: row.description,
+  totalAmount: Number(row.total_amount || 0),
+  settledAmount: Number(row.settled_amount || 0),
+  outstandingAmount: Number(row.outstanding_amount || 0),
+  status: row.status,
+  openedAt: row.opened_at,
+  closedAt: row.closed_at || null,
+  notes: row.notes || '',
+  createdAt: row.created_at
+});
+
+const mapDebtPayment = (row) => ({
+  id: row.id,
+  debtId: row.debt_id,
+  stationId: row.station_id,
+  amount: Number(row.amount || 0),
+  settledAt: row.settled_at,
+  note: row.note || '',
+  createdAt: row.created_at
+});
+
 // ---------------------------------------------------------------------------
 // Supabase loaders
 // ---------------------------------------------------------------------------
@@ -116,7 +155,9 @@ const loadFromSupabase = async () => {
     { data: cycles, error: e5 },
     { data: deposits, error: e6 },
     { data: internalUses, error: e7 },
-    { data: pumpReadings, error: e8 }
+    { data: pumpReadings, error: e8 },
+    { data: expenses, error: e9 },
+    { data: debts, error: e10 }
   ] = await Promise.all([
     supabase.from("petrol_stations").select("*").eq("status", "active").order("created_at"),
     supabase.from("fuel_products").select("*").eq("status", "active").order("name"),
@@ -125,10 +166,12 @@ const loadFromSupabase = async () => {
     supabase.from("delivery_cycles").select("*").order("opened_at"),
     supabase.from("daily_deposits").select("*").order("date"),
     supabase.from("internal_fuel_use").select("*").order("date"),
-    supabase.from("pump_meter_readings").select("*").order("date")
+    supabase.from("pump_meter_readings").select("*").order("date"),
+    supabase.from("expenses").select("*").order("date", { ascending: false }),
+    supabase.from("debts").select("*").order("opened_at", { ascending: false })
   ]);
 
-  const firstError = e1 || e2 || e3 || e4 || e5 || e6 || e7 || e8;
+  const firstError = e1 || e2 || e3 || e4 || e5 || e6 || e7 || e8 || e9 || e10;
   if (firstError) throw new Error(firstError.message);
 
   const mappedDepotTrips = (depotTrips || []).map(mapDepotTrip);
@@ -147,7 +190,8 @@ const loadFromSupabase = async () => {
     pumpMeterReadings: (pumpReadings || []).map(mapPumpReading),
     priceHistory: [],
     auditLogs: [],
-    expenses: []
+    expenses: (expenses || []).map(mapExpense),
+    debts: (debts || []).map(mapDebt)
   };
 };
 
@@ -321,6 +365,75 @@ export const savePumpReading = async (reading) => {
   return mapPumpReading(data);
 };
 
+export const saveExpense = async (expense) => {
+  const { data, error } = await supabase
+    .from('expenses')
+    .insert({
+      station_id: uuid(expense.stationId),
+      date: expense.date,
+      shift: expense.shift || 'day',
+      category: expense.category,
+      description: expense.description,
+      amount: expense.amount,
+      payment_method: expense.paymentMethod || 'cash',
+      debt_id: uuid(expense.debtId)
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapExpense(data);
+};
+
+export const saveDebt = async (debt) => {
+  const { data, error } = await supabase
+    .from('debts')
+    .insert({
+      station_id: uuid(debt.stationId),
+      debtor_name: debt.debtorName,
+      description: debt.description,
+      total_amount: debt.totalAmount,
+      settled_amount: debt.settledAmount || 0,
+      outstanding_amount: debt.outstandingAmount || debt.totalAmount,
+      status: debt.status || 'open',
+      opened_at: debt.openedAt || new Date().toISOString(),
+      notes: debt.notes || ''
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapDebt(data);
+};
+
+export const updateDebt = async (debt) => {
+  const { error } = await supabase
+    .from('debts')
+    .update({
+      settled_amount: debt.settledAmount,
+      outstanding_amount: debt.outstandingAmount,
+      status: debt.status,
+      closed_at: debt.closedAt || null,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', debt.id);
+  if (error) throw new Error(error.message);
+};
+
+export const saveDebtPayment = async (payment) => {
+  const { data, error } = await supabase
+    .from('debt_payments')
+    .insert({
+      debt_id: payment.debtId,
+      station_id: uuid(payment.stationId),
+      amount: payment.amount,
+      settled_at: payment.settledAt,
+      note: payment.note || ''
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapDebtPayment(data);
+};
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -396,6 +509,8 @@ export const withState = async (handler) => {
 
   if (changed.has("internalFuelUses")) await saveInternalUse(lastOf(state.internalFuelUses));
   if (changed.has("pumpMeterReadings")) await savePumpReading(lastOf(state.pumpMeterReadings));
+  if (changed.has("expenses")) await saveExpense(lastOf(state.expenses));
+  if (changed.has("debts")) await saveDebt(lastOf(state.debts));
 
   return result;
 };
