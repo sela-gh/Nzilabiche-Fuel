@@ -307,6 +307,107 @@ export const createExpense = (state, payload) => {
 };
 
 
+
+export const issueDebt = (state, payload) => {
+  const amount = Number(payload.amount);
+  if (!payload.stationId) throw new Error("Station is required.");
+  if (!payload.debtorName?.trim()) throw new Error("Debtor name is required.");
+  if (!payload.description?.trim()) throw new Error("Description is required.");
+  if (amount <= 0) throw new Error("Debt amount must be greater than zero.");
+
+  const issuedAt = payload.date || new Date().toISOString();
+  const debtorKey = payload.debtorName.trim().toLowerCase();
+
+  // Find existing open debt for this debtor at this station
+  const existing = state.debts
+    ? state.debts.find(
+        (d) =>
+          d.status === "open" &&
+          d.stationId === payload.stationId &&
+          d.debtorName.toLowerCase() === debtorKey
+      )
+    : null;
+
+  let debt;
+  if (existing) {
+    existing.totalAmount = round(existing.totalAmount + amount);
+    existing.outstandingAmount = round(existing.outstandingAmount + amount);
+    existing.lastActivityAt = issuedAt;
+    debt = existing;
+  } else {
+    debt = {
+      id: id("debt"),
+      stationId: payload.stationId,
+      debtorName: payload.debtorName.trim(),
+      description: payload.description.trim(),
+      totalAmount: round(amount),
+      settledAmount: 0,
+      outstandingAmount: round(amount),
+      status: "open",
+      openedAt: issuedAt,
+      lastActivityAt: issuedAt,
+      shift: payload.shift || "day",
+      paymentMethod: payload.paymentMethod || "cash",
+      closedAt: null,
+      notes: ""
+    };
+    if (!state.debts) state.debts = [];
+    state.debts.push(debt);
+  }
+
+  // Also record as an expense
+  const expense = {
+    id: id("expense"),
+    stationId: payload.stationId,
+    date: issuedAt,
+    shift: payload.shift || "day",
+    category: "Debt",
+    description: "Debt to " + payload.debtorName.trim() + ": " + payload.description.trim(),
+    amount: round(amount),
+    paymentMethod: payload.paymentMethod || "cash",
+    debtId: debt.id,
+    createdAt: new Date().toISOString()
+  };
+  state.expenses.push(expense);
+
+  return { debtId: debt.id, debt, expense };
+};
+
+export const settleDebt = (state, payload) => {
+  const amount = Number(payload.amount);
+  if (!payload.debtId) throw new Error("Debt ID is required.");
+  if (amount <= 0) throw new Error("Settlement amount must be greater than zero.");
+
+  const debt = (state.debts || []).find((d) => d.id === payload.debtId);
+  if (!debt) throw new Error("Debt not found.");
+  if (amount > debt.outstandingAmount) {
+    throw new Error("Settlement cannot exceed the outstanding balance.");
+  }
+
+  const settledAt = payload.settledAt || new Date().toISOString();
+  const remaining = round(Math.max(0, debt.outstandingAmount - amount));
+
+  debt.settledAmount = round(debt.settledAmount + amount);
+  debt.outstandingAmount = remaining;
+  debt.status = remaining === 0 ? "settled" : "open";
+  debt.closedAt = remaining === 0 ? settledAt : null;
+  debt.lastActivityAt = settledAt;
+
+  const payment = {
+    id: id("debt-payment"),
+    debtId: debt.id,
+    stationId: debt.stationId,
+    amount: round(amount),
+    settledAt,
+    paymentMethod: payload.paymentMethod || "cash",
+    note: payload.note || ""
+  };
+  if (!state.debtPayments) state.debtPayments = [];
+  state.debtPayments.push(payment);
+
+  return { debt, payment, remaining };
+};
+
 export const recordDelivery = (state, payload) => {
   const deliveredAt = payload.deliveredAt || new Date().toISOString();
   const activeCycle = getActiveCycle(state, payload.stationId, payload.productId);
@@ -441,7 +542,8 @@ export const getDashboard = (state) => {
     };
   });
 
-  const totals = cycleCards.reduce(
+  // 1. ACTIVE CYCLE TOTALS (For the current shift/tank status)
+  const activeTotals = cycleCards.reduce(
     (acc, cycle) => {
       acc.cashCollected += cycle.snapshot.revenue;
       acc.fuelSold += cycle.snapshot.estimatedLitersSold;
@@ -452,12 +554,42 @@ export const getDashboard = (state) => {
     { cashCollected: 0, fuelSold: 0, expectedStock: 0, grossProfit: 0 }
   );
 
+  // 2. TRUE P&L CALCULATION (All-Time Summary)
+  // Get Gross Profit from ALL cycles (Closed + Active)
+  const closedGrossProfit = state.cycles
+    .filter((c) => c.status === "closed")
+    .reduce((sum, c) => sum + Number(c.grossProfit || 0), 0);
+    
+  const totalGrossProfit = closedGrossProfit + activeTotals.grossProfit;
+
+  // Separate Operating Expenses vs Debt
+  const expenses = state.expenses || [];
+  const operatingExpenses = expenses
+    .filter((e) => e.category !== "Debt")
+    .reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    
+  const debtDisbursements = expenses
+    .filter((e) => e.category === "Debt")
+    .reduce((sum, e) => sum + Number(e.amount || 0), 0);
+
+  const totalExpenses = operatingExpenses + debtDisbursements;
+
+  // Calculate True Net Profit
+  const netProfit = totalGrossProfit - totalExpenses;
+
   return {
     totals: {
-      cashCollected: round(totals.cashCollected),
-      fuelSold: round(totals.fuelSold),
-      expectedStock: round(totals.expectedStock),
-      grossProfit: round(totals.grossProfit)
+      cashCollected: round(activeTotals.cashCollected),
+      fuelSold: round(activeTotals.fuelSold),
+      expectedStock: round(activeTotals.expectedStock),
+      grossProfit: round(activeTotals.grossProfit) 
+    },
+    financialSummary: {
+      totalGrossProfit: round(totalGrossProfit),
+      totalOperatingExpenses: round(operatingExpenses),
+      totalDebtDisbursements: round(debtDisbursements),
+      totalExpenses: round(totalExpenses),
+      netProfit: round(netProfit)
     },
     cycleCards,
     varianceAlerts: state.cycles
@@ -479,5 +611,7 @@ export const getBootstrap = (state) => ({
   internalFuelUses: state.internalFuelUses,
   pumpMeterReadings: state.pumpMeterReadings,
   auditLogs: state.auditLogs,
+  expenses: state.expenses || [],
+  debts: state.debts || [],
   dashboard: getDashboard(state)
 });

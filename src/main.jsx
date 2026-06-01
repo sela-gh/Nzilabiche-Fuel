@@ -248,12 +248,6 @@ const emptyForms = {
   }
 };
 
-// ---------------------------------------------------------------------------
-// Local expense store (persisted in memory; backend can be wired later)
-// ---------------------------------------------------------------------------
-let _localExpenses = [];
-let _localDebts = [];
-
 function App() {
   const [data, setData] = useState(null);
   const [activeView, setActiveView] = useState("dashboard");
@@ -320,8 +314,8 @@ function App() {
         stationId: current.debtIssue.stationId || firstStation
       }
     }));
-    setExpenses([..._localExpenses]);
-    setDebts([..._localDebts]);
+    setExpenses(bootstrap.expenses || []);
+    setDebts(bootstrap.debts || []);
     api
       .getDatabaseStatus()
       .then(setDatabaseStatus)
@@ -381,23 +375,25 @@ function App() {
     if (Number(f.amount) <= 0) { setError("Amount must be greater than zero."); return; }
     if (!f.description.trim()) { setError("Please enter a description."); return; }
 
-    const entry = {
-      id: `expense-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
-      stationId: f.stationId,
-      date: eatInputToIso(f.date),
-      shift: f.shift,
-      category: f.category,
-      description: f.description.trim(),
-      amount: Number(f.amount),
-      paymentMethod: f.paymentMethod
-    };
-    _localExpenses = [entry, ..._localExpenses];
-    setExpenses([..._localExpenses]);
-    setNotice("Expense recorded.");
-    setForms((current) => ({
-      ...current,
-      expense: { ...emptyForms.expense, stationId: f.stationId, date: eatDateTimeInput() }
-    }));
+    try {
+      await api.post("/api/expenses", {
+        stationId: f.stationId,
+        date: eatInputToIso(f.date),
+        shift: f.shift,
+        category: f.category,
+        description: f.description.trim(),
+        amount: Number(f.amount),
+        paymentMethod: f.paymentMethod
+      });
+      setNotice("Expense recorded.");
+      setForms((current) => ({
+        ...current,
+        expense: { ...emptyForms.expense, stationId: f.stationId, date: eatDateTimeInput() }
+      }));
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const submitDebtIssue = () => {
@@ -413,84 +409,34 @@ function App() {
     if (!description) { setError("Please enter what the debt was for."); return; }
     if (amount <= 0) { setError("Debt amount must be greater than zero."); return; }
 
-    const issuedAt = eatInputToIso(f.date);
-    const issueEntry = {
-      id: `debt-entry-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
-      type: "issued",
-      date: issuedAt,
-      amount,
-      shift: f.shift,
-      paymentMethod: f.paymentMethod,
-      note: description
-    };
-    const debtorKey = debtorName.toLowerCase();
-    const existingIndex = _localDebts.findIndex(
-      (debt) => debt.status === "open" && debt.stationId === f.stationId && debt.debtorName.toLowerCase() === debtorKey
-    );
-    let debtId;
-
-    if (existingIndex >= 0) {
-      const existing = _localDebts[existingIndex];
-      debtId = existing.id;
-      _localDebts = [
-        {
-          ...existing,
-          principalAmount: existing.principalAmount + amount,
-          outstandingAmount: existing.outstandingAmount + amount,
-          lastActivityAt: issuedAt,
-          entries: [issueEntry, ...existing.entries]
-        },
-        ..._localDebts.filter((_, index) => index !== existingIndex)
-      ];
-    } else {
-      debtId = `debt-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
-      _localDebts = [
-        {
-          id: debtId,
-          stationId: f.stationId,
-          debtorName,
-          description,
-          issuedAt,
-          lastActivityAt: issuedAt,
-          shift: f.shift,
-          principalAmount: amount,
-          outstandingAmount: amount,
-          paymentMethod: f.paymentMethod,
-          status: "open",
-          entries: [issueEntry]
-        },
-        ..._localDebts
-      ];
-    }
-
-    const expenseEntry = {
-      id: `expense-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
-      stationId: f.stationId,
-      date: issuedAt,
-      shift: f.shift,
-      category: DEBT_EXPENSE_CATEGORY,
-      description: `Debt to ${debtorName}: ${description}`,
-      amount,
-      paymentMethod: f.paymentMethod,
-      debtId
-    };
-    _localExpenses = [expenseEntry, ..._localExpenses];
-    setExpenses([..._localExpenses]);
-    setDebts([..._localDebts]);
-    setNotice("Debt recorded and added to expenses.");
-    setForms((current) => ({
-      ...current,
-      debtIssue: {
-        ...emptyForms.debtIssue,
+    try {
+      const result = await api.post("/api/debts/issue", {
         stationId: f.stationId,
-        date: eatDateTimeInput(),
+        debtorName,
+        description,
+        amount,
+        date: eatInputToIso(f.date),
+        shift: f.shift,
         paymentMethod: f.paymentMethod
-      },
-      debtSettlement: {
-        ...current.debtSettlement,
-        debtId
-      }
-    }));
+      });
+      setNotice("Debt recorded and added to expenses.");
+      setForms((current) => ({
+        ...current,
+        debtIssue: {
+          ...emptyForms.debtIssue,
+          stationId: f.stationId,
+          date: eatDateTimeInput(),
+          paymentMethod: f.paymentMethod
+        },
+        debtSettlement: {
+          ...current.debtSettlement,
+          debtId: result.debtId || ""
+        }
+      }));
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const submitDebtSettlement = () => {
@@ -507,39 +453,29 @@ function App() {
       return;
     }
 
-    const settledAt = eatInputToIso(f.settledAt);
-    const remaining = Math.max(0, debt.outstandingAmount - amount);
-    const settlementEntry = {
-      id: `debt-entry-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
-      type: "settled",
-      date: settledAt,
-      amount,
-      paymentMethod: f.paymentMethod,
-      note: f.note.trim()
-    };
-
-    _localDebts = _localDebts.map((item) =>
-      item.id === debt.id
-        ? {
-            ...item,
-            outstandingAmount: remaining,
-            status: remaining === 0 ? "settled" : "open",
-            lastActivityAt: settledAt,
-            entries: [settlementEntry, ...item.entries]
-          }
-        : item
-    );
-    setDebts([..._localDebts]);
-    setNotice(remaining === 0 ? "Debt fully settled." : "Debt settlement recorded.");
-    setForms((current) => ({
-      ...current,
-      debtSettlement: {
-        ...emptyForms.debtSettlement,
-        debtId: _localDebts.find((item) => item.status === "open")?.id || "",
-        settledAt: eatDateTimeInput(),
-        paymentMethod: f.paymentMethod
-      }
-    }));
+    try {
+      await api.post("/api/debts/settle", {
+        debtId: debt.id,
+        stationId: debt.stationId,
+        amount,
+        settledAt: eatInputToIso(f.settledAt),
+        paymentMethod: f.paymentMethod,
+        note: f.note.trim()
+      });
+      const remaining = Math.max(0, debt.outstandingAmount - amount);
+      setNotice(remaining === 0 ? "Debt fully settled." : "Debt settlement recorded.");
+      setForms((current) => ({
+        ...current,
+        debtSettlement: {
+          ...emptyForms.debtSettlement,
+          settledAt: eatDateTimeInput(),
+          paymentMethod: f.paymentMethod
+        }
+      }));
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   if (!data) {

@@ -510,7 +510,19 @@ export const withState = async (handler) => {
   if (changed.has("internalFuelUses")) await saveInternalUse(lastOf(state.internalFuelUses));
   if (changed.has("pumpMeterReadings")) await savePumpReading(lastOf(state.pumpMeterReadings));
   if (changed.has("expenses")) await saveExpense(lastOf(state.expenses));
-  if (changed.has("debts")) await saveDebt(lastOf(state.debts));
+  if (changed.has("debts")) {
+    // issueDebt may push a new debt OR mutate an existing one
+    // We save the last pushed one; mutations are handled via updateDebt in settleDebt path
+    await saveDebt(lastOf(state.debts));
+  }
+  if (changed.has("debtPayments")) {
+    // settleDebt pushes a payment and mutates the debt object
+    const payment = lastOf(state.debtPayments);
+    await saveDebtPayment(payment);
+    // Also update the mutated debt in Supabase
+    const debt = (state.debts || []).find((d) => d.id === payment.debtId);
+    if (debt && uuid(debt.id)) await updateDebt(debt);
+  }
 
   return result;
 };

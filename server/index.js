@@ -9,6 +9,9 @@ import {
   createDepotTrip,
   createLorry,
   createStation,
+  createExpense,
+  issueDebt,
+  settleDebt,
   getBootstrap,
   recordDelivery,
   recordInternalFuelUse,
@@ -118,6 +121,27 @@ const handleApi = async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/month-end-close") {
       const payload = await readJsonBody(req);
       const result = await withState((state) => closeMonth(state, payload));
+      sendJson(res, 201, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/expenses") {
+      const payload = await readJsonBody(req);
+      const result = await withState((state) => createExpense(state, payload));
+      sendJson(res, 201, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/debts/issue") {
+      const payload = await readJsonBody(req);
+      const result = await withState((state) => issueDebt(state, payload));
+      sendJson(res, 201, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/debts/settle") {
+      const payload = await readJsonBody(req);
+      const result = await withState((state) => settleDebt(state, payload));
       sendJson(res, 201, result);
       return;
     }
