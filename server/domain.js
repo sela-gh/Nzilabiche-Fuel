@@ -423,18 +423,18 @@ export const recordDelivery = (state, payload) => {
   }
 
   let previousCycle = null;
-  let oldLiters = 0;
+  // Always capture the dipstick reading, even if this is the first delivery
+  let oldLiters = Number(payload.preDeliveryDipstickLiters || 0); 
   let oldCost = depotTrip.costPerLiter;
 
   if (activeCycle) {
     previousCycle = closeCycle(
       state,
       activeCycle,
-      Number(payload.preDeliveryDipstickLiters),
+      oldLiters, // Use the variable you just set above
       deliveredAt,
       "delivery"
     );
-    oldLiters = Number(payload.preDeliveryDipstickLiters);
     oldCost = Number(activeCycle.blendedCostPerLiter);
   }
 
