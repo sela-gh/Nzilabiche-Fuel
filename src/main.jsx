@@ -367,7 +367,7 @@ function App() {
     }
   };
 
-  const submitExpense = () => {
+  const submitExpense = async () => {
     setError("");
     setNotice("");
     const f = forms.expense;
@@ -396,7 +396,7 @@ function App() {
     }
   };
 
-  const submitDebtIssue = () => {
+  const submitDebtIssue = async () => {
     setError("");
     setNotice("");
     const f = forms.debtIssue;
@@ -439,12 +439,12 @@ function App() {
     }
   };
 
-  const submitDebtSettlement = () => {
+  const submitDebtSettlement = async () => {
     setError("");
     setNotice("");
     const f = forms.debtSettlement;
     const amount = Number(f.amount);
-    const debt = _localDebts.find((item) => item.id === f.debtId);
+    const debt = debts.find((item) => item.id === f.debtId);
 
     if (!debt) { setError("Please select an open debt to settle."); return; }
     if (amount <= 0) { setError("Settlement amount must be greater than zero."); return; }
@@ -572,9 +572,11 @@ function App() {
 // ---------------------------------------------------------------------------
 function Dashboard({ data, expenses }) {
   const { totals, cycleCards, recentDeposits } = data.dashboard;
+  const financialSummary = data.dashboard.financialSummary || {};
 
-  const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
-  const netProfit = totals.grossProfit - totalExpenses;
+  const totalExpenses =
+    financialSummary.totalExpenses ?? expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+  const netProfit = financialSummary.netProfit ?? totals.grossProfit - totalExpenses;
 
   return (
     <section className="view-grid">
@@ -1385,12 +1387,16 @@ function Variance({ data, reference, forms, updateForm, submit }) {
 // Reports — now includes expense deduction and shift P&L
 // ---------------------------------------------------------------------------
 function Reports({ data, reference, forms, updateForm, submit, expenses }) {
+  const financialSummary = data.dashboard.financialSummary || {};
   const closedCycles = data.cycles.filter((cycle) => cycle.status === "closed");
   const revenue = closedCycles.reduce((sum, cycle) => sum + Number(cycle.revenue || 0), 0);
   const cogs = closedCycles.reduce((sum, cycle) => sum + Number(cycle.estimatedCogs || 0), 0);
-  const grossProfit = closedCycles.reduce((sum, cycle) => sum + Number(cycle.grossProfit || 0), 0);
-  const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
-  const netProfit = grossProfit - totalExpenses;
+  const grossProfit =
+    financialSummary.totalGrossProfit ??
+    closedCycles.reduce((sum, cycle) => sum + Number(cycle.grossProfit || 0), 0);
+  const totalExpenses =
+    financialSummary.totalExpenses ?? expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+  const netProfit = financialSummary.netProfit ?? grossProfit - totalExpenses;
 
   // Shift P&L using live deposits
   const allDeposits = data.dailyDeposits || [];
