@@ -122,12 +122,14 @@ const mapDebt = (row) => ({
   stationId: row.station_id,
   debtorName: row.debtor_name,
   description: row.description,
+  principalAmount: Number(row.total_amount || 0),
   totalAmount: Number(row.total_amount || 0),
   settledAmount: Number(row.settled_amount || 0),
   outstandingAmount: Number(row.outstanding_amount || 0),
   status: row.status,
   openedAt: row.opened_at,
   closedAt: row.closed_at || null,
+  lastActivityAt: row.updated_at || row.closed_at || row.opened_at,
   notes: row.notes || '',
   createdAt: row.created_at
 });

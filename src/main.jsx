@@ -585,7 +585,7 @@ function Dashboard({ data, expenses }) {
         <Metric icon={Gauge} label="Fuel sold" value={liters(totals.fuelSold)} />
         <Metric icon={Droplets} label="Expected stock" value={liters(totals.expectedStock)} />
         <Metric icon={BarChart3} label="Gross profit" value={money(totals.grossProfit)} />
-        <Metric icon={Receipt} label="Total expenses" value={money(totalExpenses)} />
+        <Metric icon={Receipt} label="Expenses + open debt" value={money(totalExpenses)} />
         <Metric icon={BarChart3} label="Net profit / loss" value={money(netProfit)} highlight={netProfit < 0 ? "loss" : "profit"} />
       </div>
 
@@ -1426,7 +1426,7 @@ function Reports({ data, reference, forms, updateForm, submit, expenses }) {
         <Metric icon={WalletCards} label="Closed revenue" value={money(revenue)} />
         <Metric icon={Factory} label="Estimated COGS" value={money(cogs)} />
         <Metric icon={BarChart3} label="Gross profit" value={money(grossProfit)} />
-        <Metric icon={Receipt} label="Operating expenses" value={money(totalExpenses)} />
+        <Metric icon={Receipt} label="Expenses + open debt" value={money(totalExpenses)} />
         <Metric icon={BarChart3} label="Net profit / loss" value={money(netProfit)} highlight={netProfit < 0 ? "loss" : "profit"} />
         <Metric icon={AlertTriangle} label="Variance cycles" value={closedCycles.length} />
       </div>

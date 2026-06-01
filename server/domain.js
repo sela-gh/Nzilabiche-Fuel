@@ -562,8 +562,10 @@ export const getDashboard = (state) => {
     
   const totalGrossProfit = closedGrossProfit + activeTotals.grossProfit;
 
-  // Separate Operating Expenses vs Debt
+  // Separate operating expenses from debt. Debt only affects the profit
+  // position while it is still outstanding; settled debt is cash recovered.
   const expenses = state.expenses || [];
+  const debts = state.debts || [];
   const operatingExpenses = expenses
     .filter((e) => e.category !== "Debt")
     .reduce((sum, e) => sum + Number(e.amount || 0), 0);
@@ -572,10 +574,12 @@ export const getDashboard = (state) => {
     .filter((e) => e.category === "Debt")
     .reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
-  const totalExpenses = operatingExpenses + debtDisbursements;
+  const outstandingDebt = debts.reduce((sum, debt) => sum + Number(debt.outstandingAmount || 0), 0);
+  const settledDebt = debts.reduce((sum, debt) => sum + Number(debt.settledAmount || 0), 0);
+  const profitImpactExpenses = operatingExpenses + outstandingDebt;
 
   // Calculate True Net Profit
-  const netProfit = totalGrossProfit - totalExpenses;
+  const netProfit = totalGrossProfit - profitImpactExpenses;
 
   return {
     totals: {
@@ -588,7 +592,9 @@ export const getDashboard = (state) => {
       totalGrossProfit: round(totalGrossProfit),
       totalOperatingExpenses: round(operatingExpenses),
       totalDebtDisbursements: round(debtDisbursements),
-      totalExpenses: round(totalExpenses),
+      totalDebtOutstanding: round(outstandingDebt),
+      totalDebtSettled: round(settledDebt),
+      totalExpenses: round(profitImpactExpenses),
       netProfit: round(netProfit)
     },
     cycleCards,
