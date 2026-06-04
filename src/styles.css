@@ -747,3 +747,243 @@ tr.row-danger td { background: #fff8f7; color: var(--red); }
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Global shift switcher (topbar) ──────────────────────────────────────── */
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.global-shift-switcher {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.shift-switcher-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border: none;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.shift-switcher-btn:last-child {
+  border-right: none;
+}
+
+/* Day active */
+.shift-switcher-btn:first-child.active {
+  background: #fffbea;
+  color: #92570e;
+}
+
+/* Night active */
+.shift-switcher-btn:last-child.active {
+  background: #1a2740;
+  color: #a8c5e8;
+}
+
+/* ── Night shift banner ───────────────────────────────────────────────────── */
+.night-shift-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: #1a2740;
+  color: #a8c5e8;
+  font-weight: 700;
+  font-size: 0.92rem;
+  border: 1px solid #2e445e;
+}
+
+/* ── Night mode — full workspace theme ───────────────────────────────────── */
+.night-mode {
+  background: #0f1923;
+}
+
+.night-mode .workspace {
+  background: #0f1923;
+}
+
+.night-mode .topbar h1 {
+  color: #e8f0f8;
+}
+
+.night-mode .eyebrow {
+  color: #5bbfcc;
+}
+
+.night-mode .section-band,
+.night-mode .entry-panel,
+.night-mode .table-section {
+  background: #172230;
+  border-color: #2e445e;
+  color: #d7e4f0;
+}
+
+.night-mode .section-heading p,
+.night-mode .field-note,
+.night-mode .muted {
+  color: #7a9ab8;
+}
+
+.night-mode h2,
+.night-mode h3,
+.night-mode strong {
+  color: #e8f0f8;
+}
+
+.night-mode .metric {
+  background: #172230;
+  border-color: #2e445e;
+}
+
+.night-mode .metric span {
+  color: #7a9ab8;
+}
+
+.night-mode .metric strong {
+  color: #e8f0f8;
+}
+
+.night-mode .cycle-card {
+  background: #1e2f42;
+  border-color: #2e445e;
+}
+
+.night-mode .field input,
+.night-mode .field select {
+  background: #1e2f42;
+  border-color: #2e445e;
+  color: #e8f0f8;
+}
+
+.night-mode .field span {
+  color: #7a9ab8;
+}
+
+.night-mode table {
+  color: #d7e4f0;
+}
+
+.night-mode th {
+  background: #1a2a3a;
+  color: #7a9ab8;
+}
+
+.night-mode td {
+  border-top-color: #2e445e;
+}
+
+.night-mode tr:hover td {
+  background: #1e2f42;
+}
+
+.night-mode .toggle-buttons {
+  background: #1e2f42;
+  border-color: #2e445e;
+}
+
+.night-mode .toggle-btn {
+  color: #7a9ab8;
+  border-right-color: #2e445e;
+}
+
+.night-mode .action-button {
+  background: #1a6b4a;
+}
+
+.night-mode .action-button:hover {
+  background: #145a3d;
+}
+
+.night-mode .icon-button {
+  background: #172230;
+  border-color: #2e445e;
+  color: #a8c5e8;
+}
+
+.night-mode .notice.success {
+  background: #0d3526;
+  color: #4caf8a;
+}
+
+.night-mode .notice.error {
+  background: #3d1515;
+  color: #f87171;
+}
+
+.night-mode .stock-bar {
+  background: #2e445e;
+}
+
+.night-mode .alert-row {
+  background: #1a3040;
+  color: #5bbfcc;
+}
+
+.night-mode .alert-row.danger {
+  background: #3d2a10;
+  color: #e8a040;
+}
+
+.night-mode .expense-category-row {
+  background: #1e2f42;
+  border-color: #2e445e;
+}
+
+.night-mode .debt-balance-strip {
+  background: #1e2f42;
+  border-color: #2e445e;
+}
+
+/* Sidebar stays dark always — just tweak active state for night */
+.night-mode .nav-list button.active {
+  background: #1a3a5c;
+  border-color: #3a6090;
+}
+
+.night-mode .global-shift-switcher {
+  border-color: #2e445e;
+  background: #172230;
+}
+
+.night-mode .shift-switcher-btn {
+  border-right-color: #2e445e;
+  color: #7a9ab8;
+}
+
+.night-mode .shift-switcher-btn:last-child.active {
+  background: #0f1923;
+  color: #a8c5e8;
+}
+
+@media (max-width: 720px) {
+  .topbar-right {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  
+  .global-shift-switcher {
+    width: 100%;
+  }
+  
+  .shift-switcher-btn {
+    flex: 1;
+    justify-content: center;
+  }
+}

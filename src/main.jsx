@@ -256,6 +256,7 @@ function App() {
   const [error, setError] = useState("");
   const [expenses, setExpenses] = useState([]);
   const [debts, setDebts] = useState([]);
+  const [activeShift, setActiveShift] = useState("day");
   const [databaseStatus, setDatabaseStatus] = useState({
     connected: false,
     configured: isSupabaseConfigured,
@@ -499,11 +500,13 @@ function App() {
     submitDebtSettlement,
     expenses,
     debts,
-    databaseStatus
+    databaseStatus,
+    activeShift,
+    setActiveShift
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${activeShift === "night" ? " night-mode" : ""}`}>
       <aside className="sidebar">
         <div className="brand-block">
           <div className="brand-mark">
@@ -546,10 +549,41 @@ function App() {
             <p className="eyebrow">Cycle-based reconciliation</p>
             <h1>{navItems.find((item) => item.id === activeView)?.label}</h1>
           </div>
-          <button className="icon-button" onClick={load} type="button" aria-label="Refresh data">
-            <RefreshCw size={18} />
-          </button>
+          <div className="topbar-right">
+            <div className="global-shift-switcher">
+              {SHIFTS.map(({ value, label, icon: Icon }) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`shift-switcher-btn${activeShift === value ? " active" : ""}`}
+                  onClick={() => {
+                    setActiveShift(value);
+                    setForms(current => ({
+                      ...current,
+                      deposit: { ...current.deposit, shift: value },
+                      expense: { ...current.expense, shift: value },
+                      debtIssue: { ...current.debtIssue, shift: value },
+                      internal: { ...current.internal, shift: value },
+                      pump: { ...current.pump, shift: value }
+                    }));
+                  }}
+                >
+                  <Icon size={16} />
+                  {label}
+                </button>
+              ))}
+            </div>
+            <button className="icon-button" onClick={load} type="button" aria-label="Refresh data">
+              <RefreshCw size={18} />
+            </button>
+          </div>
         </header>
+        {activeShift === "night" && (
+          <div className="night-shift-banner">
+            <Moon size={16} />
+            Night shift active — all entries will be recorded under night shift
+          </div>
+        )}
 
         {notice && <div className="notice success">{notice}</div>}
         {error && <div className="notice error">{error}</div>}
@@ -1637,3 +1671,5 @@ const rootElement = document.getElementById("root");
 const root = window.__nzilabicheRoot || createRoot(rootElement);
 window.__nzilabicheRoot = root;
 root.render(<App />);
+
+/* inject styles via a style tag approach - actual CSS goes in styles.css */
