@@ -81,7 +81,9 @@ const mapDeposit = (row) => ({
   date: row.date || row.deposit_date,
   cashDeposited: Number(row.cash_deposited || 0),
   pumpPrice: Number(row.pump_price || 0),
-  estimatedLitersSold: Number(row.estimated_liters_sold || 0)
+  estimatedLitersSold: Number(row.estimated_liters_sold || 0),
+  shift: row.shift || 'day',
+  paymentMethod: row.payment_method || 'cash'
 });
 
 const mapInternalUse = (row) => ({
