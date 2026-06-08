@@ -17,7 +17,7 @@ import {
   recordInternalFuelUse,
   recordPumpMeterReading
 } from "./domain.js";
-import { loadState, withState } from "./store.js";
+import { loadState, withState, updateDebt } from "./store.js";
 import { getSupabaseStatus } from "./supabase.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -132,12 +132,19 @@ const handleApi = async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/debts/issue") {
-      const payload = await readJsonBody(req);
-      const result = await withState((state) => issueDebt(state, payload));
-      sendJson(res, 201, result);
-      return;
-    }
+if (req.method === "POST" && url.pathname === "/api/debts/issue") {
+  const payload = await readJsonBody(req);
+  const result = await withState((state) => issueDebt(state, payload));
+  // issueDebt either pushes a new debt (withState saves it) OR mutates an
+  // existing one in-place (proxy can't detect that — we save it manually here).
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.debt.id);
+  const wasNewPush = !isUuid; // local/seed IDs are "debt-timestamp-hex", not UUIDs
+  if (!wasNewPush) {
+    await updateDebt(result.debt);
+  }
+  sendJson(res, 201, result);
+  return;
+}
 
     if (req.method === "POST" && url.pathname === "/api/debts/settle") {
       const payload = await readJsonBody(req);
