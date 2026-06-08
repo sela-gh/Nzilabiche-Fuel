@@ -1,5 +1,5 @@
-const round = (value, places = 2) => Number(Number(value || 0).toFixed(places));
-
+// AFTER
+const round = (value, places = 10) => Number(Number(value || 0).toFixed(places));
 const id = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 
 const between = (date, start, end) => {

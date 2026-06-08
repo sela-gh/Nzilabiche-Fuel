@@ -60,15 +60,20 @@ const EXPENSE_CATEGORIES = [
   "Other"
 ];
 
+// AFTER
 const money = (value) =>
   new Intl.NumberFormat(APP_LOCALE, {
     style: "currency",
     currency: "TZS",
-    maximumFractionDigits: 0
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
   }).format(Number(value || 0));
 
 const liters = (value) =>
-  `${new Intl.NumberFormat(APP_LOCALE, { maximumFractionDigits: 1 }).format(Number(value || 0))} L`;
+  `${new Intl.NumberFormat(APP_LOCALE, { 
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 10
+  }).format(Number(value || 0))} L`;
 
 const shortDate = (value) =>
   value
