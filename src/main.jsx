@@ -1186,8 +1186,8 @@ function Expenses({
           debt.debtorName,
           stationName(data, debt.stationId),
           shortDate(debt.lastActivityAt),
-          money(debt.principalAmount),
-          money(debt.principalAmount - debt.outstandingAmount),
+          money(debt.totalAmount),
+money(debt.settledAmount),
           money(debt.outstandingAmount),
           debtStatusBadge(debt.status)
         ])}

@@ -514,11 +514,17 @@ export const withState = async (handler) => {
   if (changed.has("internalFuelUses")) await saveInternalUse(lastOf(state.internalFuelUses));
   if (changed.has("pumpMeterReadings")) await savePumpReading(lastOf(state.pumpMeterReadings));
   if (changed.has("expenses")) await saveExpense(lastOf(state.expenses));
-  if (changed.has("debts")) {
-    // issueDebt may push a new debt OR mutate an existing one
-    // We save the last pushed one; mutations are handled via updateDebt in settleDebt path
-    await saveDebt(lastOf(state.debts));
+if (changed.has("debts")) {
+  const newDebt = lastOf(state.debts);
+  // issueDebt either pushes a new debt OR mutates an existing one.
+  // If the pushed debt already has a real UUID it was a merge onto an existing
+  // row — update it. Otherwise insert it fresh.
+  if (uuid(newDebt.id)) {
+    await updateDebt(newDebt);
+  } else {
+    await saveDebt(newDebt);
   }
+}
   if (changed.has("debtPayments")) {
     // settleDebt pushes a payment and mutates the debt object
     const payment = lastOf(state.debtPayments);
