@@ -9,19 +9,22 @@ const between = (date, start, end) => {
   return value >= from && value <= to;
 };
 
-export const getActiveCycle = (state, stationId, productId) =>
+export const getActiveCycle = (state, stationId, productId, pumpNumber = 1) =>
   state.cycles.find(
     (cycle) =>
       cycle.stationId === stationId &&
       cycle.productId === productId &&
-      cycle.status === "active"
+      cycle.status === "active" &&
+      (cycle.pumpNumber || 1) === pumpNumber
   );
 
 export const calculateCycleSnapshot = (state, cycle, closingAt = new Date().toISOString()) => {
+  const cyclePump = cycle.pumpNumber || 1;
   const deposits = state.dailyDeposits.filter(
     (deposit) =>
       deposit.stationId === cycle.stationId &&
       deposit.productId === cycle.productId &&
+      (deposit.pumpNumber || 1) === cyclePump &&
       between(deposit.date, cycle.openedAt, closingAt)
   );
 
@@ -82,7 +85,10 @@ export const createStation = (state, payload) => {
     name: payload.name,
     location: payload.location,
     tankCapacityLiters: round(payload.tankCapacityLiters),
-    lowStockThresholdLiters: round(payload.lowStockThresholdLiters || 0)
+    lowStockThresholdLiters: round(payload.lowStockThresholdLiters || 0),
+    petrolTankCount: Number(payload.petrolTankCount || 1),
+    dieselTankCount: Number(payload.dieselTankCount || 1),
+    keroseneTankCount: Number(payload.keroseneTankCount || 1)
   };
 
   state.stations.push(station);
@@ -182,8 +188,9 @@ export const createDeposit = (state, payload) => {
     stationId: payload.stationId,
     productId: payload.productId,
     date: payload.date || new Date().toISOString(),
-    shift: payload.shift || "day",                 // Added: Captures shift
-    paymentMethod: payload.paymentMethod || "cash", // Added: Captures payment method
+    shift: payload.shift || "day",
+    paymentMethod: payload.paymentMethod || "cash",
+    pumpNumber: Number(payload.pumpNumber || 1),
     cashDeposited: round(cashDeposited),
     pumpPrice: round(pumpPrice),
     estimatedLitersSold: round(cashDeposited / pumpPrice)
@@ -219,8 +226,9 @@ export const createDepositSettlement = (state, payload) => {
       stationId: payload.stationId,
       productId: line.productId,
       date: payload.date,
-      shift: payload.shift || "day",                 // Pass through shift
-      paymentMethod: payload.paymentMethod || "cash", // Pass through payment method
+      shift: payload.shift || "day",
+      paymentMethod: payload.paymentMethod || "cash",
+      pumpNumber: Number(line.pumpNumber || 1),
       cashDeposited: line.cashDeposited,
       pumpPrice: line.pumpPrice
     })
@@ -410,7 +418,8 @@ export const settleDebt = (state, payload) => {
 
 export const recordDelivery = (state, payload) => {
   const deliveredAt = payload.deliveredAt || new Date().toISOString();
-  const activeCycle = getActiveCycle(state, payload.stationId, payload.productId);
+  const pumpNumber = Number(payload.pumpNumber || 1);
+  const activeCycle = getActiveCycle(state, payload.stationId, payload.productId, pumpNumber);
   const depotTrip = state.depotTrips.find((trip) => trip.id === payload.depotTripId);
   const deliveryLiters = Number(payload.litersDelivered);
 
@@ -449,6 +458,7 @@ export const recordDelivery = (state, payload) => {
     stationId: payload.stationId,
     productId: payload.productId,
     depotTripId: payload.depotTripId,
+    pumpNumber,
     status: "active",
     openedAt: deliveredAt,
     closedAt: null,
@@ -521,6 +531,14 @@ export const closeMonth = (state, payload) => {
   return { closedCycle, rolloverCycle };
 };
 
+export const getTankCount = (station, productId, products) => {
+  const product = (products || []).find(p => p.id === productId);
+  const name = (product?.name || "").toLowerCase();
+  if (name.includes("diesel") || name.includes("ago")) return station.dieselTankCount || 1;
+  if (name.includes("kerosene")) return station.keroseneTankCount || 1;
+  return station.petrolTankCount || 1;
+};
+
 export const getDashboard = (state) => {
   const activeCycles = state.cycles.filter((cycle) => cycle.status === "active");
   const cycleCards = activeCycles.map((cycle) => {
@@ -531,8 +549,14 @@ export const getDashboard = (state) => {
       ? Math.max(0, Math.min(100, (snapshot.expectedClosingStockLiters / station.tankCapacityLiters) * 100))
       : 0;
 
+    // Per-pump breakdown for multi-tank stations
+    const pumpNum = cycle.pumpNumber || 1;
+    const tankCount = station ? getTankCount(station, cycle.productId, state.products) : 1;
+
     return {
       ...cycle,
+      pumpNumber: pumpNum,
+      tankCount,
       stationName: station?.name,
       productName: product?.name,
       tankCapacityLiters: station?.tankCapacityLiters,
@@ -581,6 +605,44 @@ export const getDashboard = (state) => {
   // Calculate True Net Profit
   const netProfit = totalGrossProfit - profitImpactExpenses;
 
+  // Group cycles by station+product to show combined + per-pump breakdown
+  const cycleGroups = [];
+  const seen = new Set();
+  for (const card of cycleCards) {
+    const key = card.stationId + "_" + card.productId;
+    if (!seen.has(key)) {
+      seen.add(key);
+      const siblings = cycleCards.filter(c => c.stationId === card.stationId && c.productId === card.productId);
+      const totalExpected = siblings.reduce((s, c) => s + c.snapshot.expectedClosingStockLiters, 0);
+      const totalSold = siblings.reduce((s, c) => s + c.snapshot.estimatedLitersSold, 0);
+      const totalRevenue = siblings.reduce((s, c) => s + c.snapshot.revenue, 0);
+      const totalCogs = siblings.reduce((s, c) => s + c.snapshot.estimatedCogs, 0);
+      const station = state.stations.find(s => s.id === card.stationId);
+      const totalCapacity = siblings.reduce((s) => s + (station?.tankCapacityLiters || 0), 0);
+      cycleGroups.push({
+        stationId: card.stationId,
+        productId: card.productId,
+        stationName: card.stationName,
+        productName: card.productName,
+        tankCount: card.tankCount,
+        lowStockThresholdLiters: card.lowStockThresholdLiters,
+        totalExpectedStock: round(totalExpected),
+        totalEstimatedLitersSold: round(totalSold),
+        totalRevenue: round(totalRevenue),
+        totalGrossProfit: round(totalRevenue - totalCogs),
+        stockPercent: totalCapacity > 0 ? round(Math.max(0, Math.min(100, (totalExpected / totalCapacity) * 100))) : 0,
+        pumps: siblings.map(s => ({
+          pumpNumber: s.pumpNumber || 1,
+          cycleId: s.id,
+          openedAt: s.openedAt,
+          blendedCostPerLiter: s.blendedCostPerLiter,
+          expectedStock: round(s.snapshot.expectedClosingStockLiters),
+          estimatedLitersSold: round(s.snapshot.estimatedLitersSold)
+        }))
+      });
+    }
+  }
+
   return {
     totals: {
       cashCollected: round(activeTotals.cashCollected),
@@ -598,6 +660,7 @@ export const getDashboard = (state) => {
       netProfit: round(netProfit)
     },
     cycleCards,
+    cycleGroups,
     varianceAlerts: state.cycles
       .filter((cycle) => cycle.status === "closed" && Math.abs(Number(cycle.varianceLiters || 0)) > 100)
       .slice(-8)

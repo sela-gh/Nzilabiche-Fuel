@@ -21,7 +21,10 @@ const mapStation = (row) => ({
   name: row.name,
   location: row.location,
   tankCapacityLiters: Number(row.tank_capacity_liters || 0),
-  lowStockThresholdLiters: Number(row.low_stock_threshold_liters || 0)
+  lowStockThresholdLiters: Number(row.low_stock_threshold_liters || 0),
+  petrolTankCount: Number(row.petrol_tank_count || 1),
+  dieselTankCount: Number(row.diesel_tank_count || 1),
+  keroseneTankCount: Number(row.kerosene_tank_count || 1)
 });
 
 const mapProduct = (row) => ({
@@ -55,6 +58,7 @@ const mapCycle = (row) => ({
   stationId: row.station_id,
   productId: row.product_id,
   depotTripId: row.depot_trip_id || null,
+  pumpNumber: Number(row.pump_number || 1),
   status: row.status === "open" ? "active" : row.status,
   openedAt: row.opened_at,
   closedAt: row.closed_at,
@@ -83,7 +87,8 @@ const mapDeposit = (row) => ({
   pumpPrice: Number(row.pump_price || 0),
   estimatedLitersSold: Number(row.estimated_liters_sold || 0),
   shift: row.shift || 'day',
-  paymentMethod: row.payment_method || 'cash'
+  paymentMethod: row.payment_method || 'cash',
+  pumpNumber: Number(row.pump_number || 1)
 });
 
 const mapInternalUse = (row) => ({
@@ -209,6 +214,9 @@ export const saveStation = async (station) => {
       location: station.location,
       tank_capacity_liters: station.tankCapacityLiters,
       low_stock_threshold_liters: station.lowStockThresholdLiters,
+      petrol_tank_count: station.petrolTankCount || 1,
+      diesel_tank_count: station.dieselTankCount || 1,
+      kerosene_tank_count: station.keroseneTankCount || 1,
       status: "active"
     })
     .select()
@@ -264,7 +272,8 @@ export const saveDeposit = async (deposit) => {
       pump_price: deposit.pumpPrice,
       estimated_liters_sold: deposit.estimatedLitersSold,
       shift: deposit.shift || "day",
-      payment_method: deposit.paymentMethod || "cash"
+      payment_method: deposit.paymentMethod || "cash",
+      pump_number: deposit.pumpNumber || 1
     })
     .select()
     .single();
@@ -288,6 +297,7 @@ export const saveCycle = async (cycle) => {
       station_id: uuid(cycle.stationId),
       product_id: uuid(cycle.productId),
       depot_trip_id: uuid(cycle.depotTripId),
+      pump_number: cycle.pumpNumber || 1,
       status: cycle.status === "active" ? "open" : cycle.status,
       opened_at: cycle.openedAt,
       closed_at: cycle.closedAt,
@@ -514,17 +524,11 @@ export const withState = async (handler) => {
   if (changed.has("internalFuelUses")) await saveInternalUse(lastOf(state.internalFuelUses));
   if (changed.has("pumpMeterReadings")) await savePumpReading(lastOf(state.pumpMeterReadings));
   if (changed.has("expenses")) await saveExpense(lastOf(state.expenses));
-if (changed.has("debts")) {
-  const newDebt = lastOf(state.debts);
-  // issueDebt either pushes a new debt OR mutates an existing one.
-  // If the pushed debt already has a real UUID it was a merge onto an existing
-  // row — update it. Otherwise insert it fresh.
-  if (uuid(newDebt.id)) {
-    await updateDebt(newDebt);
-  } else {
-    await saveDebt(newDebt);
+  if (changed.has("debts")) {
+    // issueDebt may push a new debt OR mutate an existing one
+    // We save the last pushed one; mutations are handled via updateDebt in settleDebt path
+    await saveDebt(lastOf(state.debts));
   }
-}
   if (changed.has("debtPayments")) {
     // settleDebt pushes a payment and mutates the debt object
     const payment = lastOf(state.debtPayments);

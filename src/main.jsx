@@ -170,9 +170,9 @@ const emptyForms = {
     shift: "day",
     paymentMethod: "cash",
     lines: [
-      { productId: "product-petrol", cashDeposited: 0, pumpPrice: 3000 },
-      { productId: "product-diesel", cashDeposited: 0, pumpPrice: 2850 },
-      { productId: "product-kerosene", cashDeposited: 0, pumpPrice: 2500 }
+      { productId: "product-petrol", pumpNumber: 1, cashDeposited: 0, pumpPrice: 0 },
+      { productId: "product-diesel", pumpNumber: 1, cashDeposited: 0, pumpPrice: 0 },
+      { productId: "product-kerosene", pumpNumber: 1, cashDeposited: 0, pumpPrice: 0 }
     ]
   },
   depot: {
@@ -187,10 +187,11 @@ const emptyForms = {
   delivery: {
     stationId: "",
     productId: "",
-    depotTripId: "",
-    litersDelivered: 0,
-    preDeliveryDipstickLiters: 0,
-    deliveredAt: eatDateTimeInput()
+    deliveredAt: eatDateTimeInput(),
+    pumps: [
+      { pumpNumber: 1, depotTripId: "", litersDelivered: 0, preDeliveryDipstickLiters: 0 },
+      { pumpNumber: 2, depotTripId: "", litersDelivered: 0, preDeliveryDipstickLiters: 0 }
+    ]
   },
   internal: {
     stationId: "",
@@ -218,7 +219,10 @@ const emptyForms = {
     name: "",
     location: "",
     tankCapacityLiters: 0,
-    lowStockThresholdLiters: 0
+    lowStockThresholdLiters: 0,
+    petrolTankCount: 1,
+    dieselTankCount: 1,
+    keroseneTankCount: 1
   },
   lorry: {
     plateNumber: "",
@@ -253,6 +257,26 @@ const emptyForms = {
   }
 };
 
+// Build deposit lines based on station tank configuration
+// For each product, if the station has 2 tanks, show 2 pump rows
+function buildDepositLines(products, stations, stationId) {
+  const station = stations.find(s => s.id === stationId);
+  const lines = [];
+  for (const product of products) {
+    const name = (product.name || "").toLowerCase();
+    let tankCount = 1;
+    if (station) {
+      if (name.includes("diesel") || name.includes("ago")) tankCount = station.dieselTankCount || 1;
+      else if (name.includes("kerosene")) tankCount = station.keroseneTankCount || 1;
+      else tankCount = station.petrolTankCount || 1;
+    }
+    for (let pump = 1; pump <= tankCount; pump++) {
+      lines.push({ productId: product.id, pumpNumber: pump, cashDeposited: 0, pumpPrice: 0 });
+    }
+  }
+  return lines;
+}
+
 function App() {
   const [data, setData] = useState(null);
   const [activeView, setActiveView] = useState("dashboard");
@@ -280,11 +304,7 @@ function App() {
       deposit: {
         ...current.deposit,
         stationId: current.deposit.stationId || firstStation,
-        lines: bootstrap.products.map((product) => ({
-          productId: product.id,
-          cashDeposited: 0,
-          pumpPrice: 0
-        }))
+        lines: buildDepositLines(bootstrap.products, bootstrap.stations, current.deposit.stationId || firstStation)
       },
       depot: {
         ...current.depot,
@@ -343,13 +363,15 @@ function App() {
     setForms((current) => ({ ...current, [key]: { ...current[key], [field]: value } }));
   };
 
-  const updateDepositLine = (productId, field, value) => {
+  const updateDepositLine = (productId, pumpNumber, field, value) => {
     setForms((current) => ({
       ...current,
       deposit: {
         ...current.deposit,
         lines: current.deposit.lines.map((line) =>
-          line.productId === productId ? { ...line, [field]: value } : line
+          line.productId === productId && (line.pumpNumber || 1) === pumpNumber
+            ? { ...line, [field]: value }
+            : line
         )
       }
     }));
@@ -594,8 +616,8 @@ function App() {
         {error && <div className="notice error">{error}</div>}
 
         {activeView === "dashboard" && <Dashboard {...activeProps} />}
-        {activeView === "deposits" && <Deposits {...activeProps} />}
-        {activeView === "deliveries" && <Deliveries {...activeProps} />}
+        {activeView === "deposits" && <Deposits {...activeProps} setForms={setForms} />}
+        {activeView === "deliveries" && <Deliveries {...activeProps} setError={setError} setNotice={setNotice} load={load} />}
         {activeView === "depot" && <DepotTrips {...activeProps} />}
         {activeView === "expenses" && <Expenses {...activeProps} />}
         {activeView === "variance" && <Variance {...activeProps} />}
@@ -634,24 +656,35 @@ function Dashboard({ data, expenses }) {
           <p>Opening stock is derived by the backend; no beginning-cycle dipstick entry is used.</p>
         </div>
         <div className="cycle-grid">
-          {cycleCards.map((cycle) => (
-            <article className="cycle-card" key={cycle.id}>
+          {(data.dashboard.cycleGroups || []).map((group) => (
+            <article className="cycle-card" key={group.stationId + group.productId}>
               <div className="cycle-title">
                 <div>
-                  <h3>{cycle.stationName}</h3>
-                  <span>{cycle.productName}</span>
+                  <h3>{group.stationName}</h3>
+                  <span>{group.productName}{group.tankCount > 1 ? ` · ${group.tankCount} tanks` : ""}</span>
                 </div>
                 <Gauge size={20} />
               </div>
               <div className="stock-bar" aria-label="Expected stock percentage">
-                <span style={{ width: `${cycle.stockPercent}%` }} />
+                <span style={{ width: `${group.stockPercent}%` }} />
               </div>
               <dl className="compact-list">
-                <div><dt>Expected stock</dt><dd>{liters(cycle.snapshot.expectedClosingStockLiters)}</dd></div>
-                <div><dt>Cycle sales</dt><dd>{liters(cycle.snapshot.estimatedLitersSold)}</dd></div>
-                <div><dt>Blended cost</dt><dd>{money(cycle.blendedCostPerLiter)} / L</dd></div>
-                <div><dt>Opened</dt><dd>{shortDate(cycle.openedAt)}</dd></div>
+                <div><dt>Total expected stock</dt><dd>{liters(group.totalExpectedStock)}</dd></div>
+                <div><dt>Total cycle sales</dt><dd>{liters(group.totalEstimatedLitersSold)}</dd></div>
+                <div><dt>Gross profit</dt><dd>{money(group.totalGrossProfit)}</dd></div>
+                <div><dt>Revenue</dt><dd>{money(group.totalRevenue)}</dd></div>
               </dl>
+              {group.tankCount > 1 && (
+                <div className="pump-breakdown">
+                  {group.pumps.map(p => (
+                    <div key={p.pumpNumber} className="pump-breakdown-row">
+                      <span>Pump {p.pumpNumber}</span>
+                      <span>{liters(p.expectedStock)} remaining</span>
+                      <span className="pump-sold">{liters(p.estimatedLitersSold)} sold</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </article>
           ))}
         </div>
@@ -700,7 +733,7 @@ function Dashboard({ data, expenses }) {
 // ---------------------------------------------------------------------------
 // Deposits — now with shift + payment method
 // ---------------------------------------------------------------------------
-function Deposits({ data, reference, forms, updateForm, updateDepositLine, submit }) {
+function Deposits({ data, reference, forms, updateForm, updateDepositLine, submit, setForms }) {
   return (
     <section className="view-grid">
       <EntryPanel
@@ -712,7 +745,18 @@ function Deposits({ data, reference, forms, updateForm, updateDepositLine, submi
           <SelectField
             label="Station"
             value={forms.deposit.stationId}
-            onChange={(value) => updateForm("deposit", "stationId", value)}
+            onChange={(value) => {
+              updateForm("deposit", "stationId", value);
+              // Rebuild lines for new station's tank config
+              setForms(current => ({
+                ...current,
+                deposit: {
+                  ...current.deposit,
+                  stationId: value,
+                  lines: buildDepositLines(reference.products, reference.stations, value)
+                }
+              }));
+            }}
             options={reference.stations.map((item) => ({ value: item.id, label: item.name }))}
           />
           <InputField
@@ -788,36 +832,122 @@ function Deposits({ data, reference, forms, updateForm, updateDepositLine, submi
 // ---------------------------------------------------------------------------
 // Deliveries
 // ---------------------------------------------------------------------------
-function Deliveries({ data, reference, forms, updateForm, submit }) {
-  const depotOptions = [
-    { value: "", label: "-- Select a linked depot trip --" },
+function Deliveries({ data, reference, forms, updateForm, submit, setError, setNotice, load }) {
+  const selectedStation = reference.stations.find(s => s.id === forms.delivery.stationId);
+  const selectedProduct = reference.products.find(p => p.id === forms.delivery.productId);
+  const productName_ = (selectedProduct?.name || "").toLowerCase();
+
+  // Determine tank count for selected station+product
+  let tankCount = 1;
+  if (selectedStation) {
+    if (productName_.includes("diesel") || productName_.includes("ago")) tankCount = selectedStation.dieselTankCount || 1;
+    else if (productName_.includes("kerosene")) tankCount = selectedStation.keroseneTankCount || 1;
+    else tankCount = selectedStation.petrolTankCount || 1;
+  }
+
+  const depotOptionsFor = (pid) => [
+    { value: "", label: "-- Select depot trip --" },
     ...reference.depotTrips
-      .filter((trip) => trip.productId === forms.delivery.productId)
+      .filter((trip) => trip.productId === pid)
       .map((trip) => ({
         value: trip.id,
-        label: `${trip.invoiceNumber} - ${productName(data, trip.productId)} @ ${money(trip.costPerLiter)}`
+        label: `${trip.invoiceNumber} @ ${money(trip.costPerLiter)}`
       }))
   ];
+
+  const updatePumpLine = (pumpNumber, field, value) => {
+    updateForm("delivery", "pumps", forms.delivery.pumps.map(p =>
+      p.pumpNumber === pumpNumber ? { ...p, [field]: value } : p
+    ));
+  };
+
+  const activePumps = forms.delivery.pumps.slice(0, tankCount);
+
+  const submitDeliveries = async () => {
+    const toSubmit = activePumps.filter(p => Number(p.litersDelivered) > 0 || Number(p.preDeliveryDipstickLiters) >= 0);
+    if (!forms.delivery.stationId || !forms.delivery.productId) {
+      setError("Please select a station and product.");
+      return;
+    }
+    if (toSubmit.length === 0) {
+      setError("Enter liters delivered for at least one pump.");
+      return;
+    }
+    setError("");
+    setNotice("");
+    try {
+      for (const pump of activePumps) {
+        if (Number(pump.litersDelivered) <= 0) continue;
+        if (!pump.depotTripId) throw new Error(`Please select a depot trip for Pump ${pump.pumpNumber}.`);
+        await fetch("/api/deliveries", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            stationId: forms.delivery.stationId,
+            productId: forms.delivery.productId,
+            deliveredAt: eatInputToIso(forms.delivery.deliveredAt),
+            depotTripId: pump.depotTripId,
+            litersDelivered: Number(pump.litersDelivered),
+            preDeliveryDipstickLiters: Number(pump.preDeliveryDipstickLiters || 0),
+            pumpNumber: pump.pumpNumber
+          })
+        }).then(async r => {
+          const body = await r.json();
+          if (!r.ok) throw new Error(body.error || "Delivery failed");
+        });
+      }
+      setNotice("Delivery cycles recorded.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
 
   return (
     <section className="view-grid">
       <EntryPanel
         title="Delivery entry"
-        description="A delivery closes the previous cycle and opens the next one automatically."
+        description="Each pump is entered separately but submitted in one go. A delivery closes the previous cycle and opens the next."
         icon={Truck}
       >
         <FormGrid>
           <SelectField label="Station" value={forms.delivery.stationId} onChange={(v) => updateForm("delivery", "stationId", v)} options={reference.stations.map((i) => ({ value: i.id, label: i.name }))} />
           <SelectField label="Product" value={forms.delivery.productId} onChange={(v) => updateForm("delivery", "productId", v)} options={reference.products.map((i) => ({ value: i.id, label: i.name }))} />
-          <SelectField label="Linked depot trip" value={forms.delivery.depotTripId} onChange={(v) => updateForm("delivery", "depotTripId", v)} options={depotOptions} />
           <InputField label="Delivery timestamp" type="datetime-local" value={forms.delivery.deliveredAt} onChange={(v) => updateForm("delivery", "deliveredAt", v)} />
-          <InputField label="Liters delivered" type="number" value={forms.delivery.litersDelivered} onChange={(v) => updateForm("delivery", "litersDelivered", v)} />
-          <InputField label="Dipstick before closure" type="number" value={forms.delivery.preDeliveryDipstickLiters} onChange={(v) => updateForm("delivery", "preDeliveryDipstickLiters", v)} />
         </FormGrid>
-        <p className="field-note">This dipstick closes the old cycle. New cycle opening stock = remaining fuel + delivered fuel.</p>
-        <ActionButton onClick={() => submit("delivery", "/api/deliveries", "Delivery cycle recorded.")}>
+
+        {activePumps.map((pump) => (
+          <div key={pump.pumpNumber} className="pump-delivery-row">
+            <div className="pump-delivery-header">
+              <strong>Pump {pump.pumpNumber}{tankCount > 1 ? ` (Tank ${pump.pumpNumber})` : ""}</strong>
+            </div>
+            <FormGrid>
+              <SelectField
+                label="Linked depot trip"
+                value={pump.depotTripId}
+                onChange={(v) => updatePumpLine(pump.pumpNumber, "depotTripId", v)}
+                options={depotOptionsFor(forms.delivery.productId)}
+              />
+              <InputField
+                label="Liters delivered"
+                type="number"
+                value={pump.litersDelivered}
+                onChange={(v) => updatePumpLine(pump.pumpNumber, "litersDelivered", v)}
+              />
+              <InputField
+                label="Dipstick before closure"
+                type="number"
+                value={pump.preDeliveryDipstickLiters}
+                onChange={(v) => updatePumpLine(pump.pumpNumber, "preDeliveryDipstickLiters", v)}
+              />
+            </FormGrid>
+          </div>
+        ))}
+
+        <p className="field-note">Dipstick closes the old cycle. New opening stock = dipstick + liters delivered.</p>
+        <ActionButton onClick={submitDeliveries}>
           <ArrowDownUp size={18} />
-          Close and open cycle
+          Close and open cycle{tankCount > 1 ? "s" : ""}
         </ActionButton>
       </EntryPanel>
 
@@ -1247,24 +1377,32 @@ money(debt.settledAmount),
 function ProductSettlementLines({ data, forms, updateDepositLine }) {
   return (
     <div className="settlement-lines">
-      {forms.deposit.lines.map((line) => (
-        <div className="product-line" key={line.productId}>
-          <strong>{productName(data, line.productId)}</strong>
-          <InputField
-            label="Cash for this product"
-            type="number"
-            value={line.cashDeposited}
-            onChange={(value) => updateDepositLine(line.productId, "cashDeposited", value)}
-          />
-          <InputField
-            label="Pump price"
-            type="number"
-            value={line.pumpPrice}
-            onChange={(value) => updateDepositLine(line.productId, "pumpPrice", value)}
-          />
-          <span>{Number(line.pumpPrice) > 0 ? liters(Number(line.cashDeposited) / Number(line.pumpPrice)) : "0 L"}</span>
-        </div>
-      ))}
+      {forms.deposit.lines.map((line) => {
+        const pump = line.pumpNumber || 1;
+        // Check if this product has multiple pumps
+        const siblingsCount = forms.deposit.lines.filter(l => l.productId === line.productId).length;
+        const label = siblingsCount > 1
+          ? `${productName(data, line.productId)} — Pump ${pump}`
+          : productName(data, line.productId);
+        return (
+          <div className="product-line" key={`${line.productId}-${pump}`}>
+            <strong>{label}</strong>
+            <InputField
+              label="Cash deposited"
+              type="number"
+              value={line.cashDeposited}
+              onChange={(value) => updateDepositLine(line.productId, pump, "cashDeposited", value)}
+            />
+            <InputField
+              label="Pump price"
+              type="number"
+              value={line.pumpPrice}
+              onChange={(value) => updateDepositLine(line.productId, pump, "pumpPrice", value)}
+            />
+            <span>{Number(line.pumpPrice) > 0 ? liters(Number(line.cashDeposited) / Number(line.pumpPrice)) : "0 L"}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1290,6 +1428,26 @@ function Setup({ reference, forms, updateForm, submit, databaseStatus }) {
             <InputField label="Location" value={forms.station.location} onChange={(v) => updateForm("station", "location", v)} />
             <InputField label="Tank capacity" type="number" value={forms.station.tankCapacityLiters} onChange={(v) => updateForm("station", "tankCapacityLiters", v)} />
             <InputField label="Low-stock alert" type="number" value={forms.station.lowStockThresholdLiters} onChange={(v) => updateForm("station", "lowStockThresholdLiters", v)} />
+          </FormGrid>
+          <FormGrid>
+            <SelectField
+              label="Petrol tanks"
+              value={String(forms.station.petrolTankCount)}
+              onChange={(v) => updateForm("station", "petrolTankCount", Number(v))}
+              options={[{ value: "1", label: "1 tank" }, { value: "2", label: "2 tanks" }]}
+            />
+            <SelectField
+              label="Diesel tanks"
+              value={String(forms.station.dieselTankCount)}
+              onChange={(v) => updateForm("station", "dieselTankCount", Number(v))}
+              options={[{ value: "1", label: "1 tank" }, { value: "2", label: "2 tanks" }]}
+            />
+            <SelectField
+              label="Kerosene tanks"
+              value={String(forms.station.keroseneTankCount)}
+              onChange={(v) => updateForm("station", "keroseneTankCount", Number(v))}
+              options={[{ value: "1", label: "1 tank" }, { value: "2", label: "2 tanks" }]}
+            />
           </FormGrid>
           <ActionButton onClick={() => submit("station", "/api/stations", "Petrol station added.")}>
             <Plus size={18} />

@@ -987,3 +987,71 @@ tr.row-danger td { background: #fff8f7; color: var(--red); }
     justify-content: center;
   }
 }
+
+/* ── Multi-pump delivery rows ─────────────────────────────────────────────── */
+.pump-delivery-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  background: #f8fafc;
+}
+
+.pump-delivery-header {
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pump-delivery-header strong {
+  color: var(--teal);
+  font-size: 0.95rem;
+}
+
+/* ── Pump breakdown in dashboard cycle cards ─────────────────────────────── */
+.pump-breakdown {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.pump-breakdown-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #f3f6f9;
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+
+.pump-breakdown-row span:first-child {
+  font-weight: 700;
+  color: var(--teal);
+  min-width: 55px;
+}
+
+.pump-breakdown-row span:nth-child(2) {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.pump-sold {
+  color: var(--muted) !important;
+  font-weight: 400 !important;
+}
+
+/* Night mode pump rows */
+.night-mode .pump-delivery-row {
+  background: #1e2f42;
+  border-color: #2e445e;
+}
+
+.night-mode .pump-breakdown-row {
+  background: #1a2a3a;
+}
