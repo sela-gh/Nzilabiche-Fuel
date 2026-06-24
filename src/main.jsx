@@ -284,24 +284,31 @@ function buildDepositLines(products, stations, stationId, pumpTankLinks = []) {
   const station = stations.find(s => s.id === stationId);
   const lines = [];
   for (const product of products) {
-    const configuredLinks = pumpTankLinksFor(pumpTankLinks, stationId, product.id);
-    if (configuredLinks.length) {
-      for (const link of configuredLinks) {
-        lines.push({
-          productId: product.id,
-          pumpNumber: Number(link.pumpNumber || 1),
-          tankNumber: Number(link.tankNumber || 1),
-          cashDeposited: 0,
-          pumpPrice: 0
-        });
-      }
-      continue;
+    const tankCount = productTankCount(station, product);
+    const productLines = new Map();
+    for (let pump = 1; pump <= tankCount; pump++) {
+      productLines.set(pump, {
+        productId: product.id,
+        pumpNumber: pump,
+        tankNumber: pump,
+        cashDeposited: 0,
+        pumpPrice: 0
+      });
     }
 
-    const tankCount = productTankCount(station, product);
-    for (let pump = 1; pump <= tankCount; pump++) {
-      lines.push({ productId: product.id, pumpNumber: pump, tankNumber: pump, cashDeposited: 0, pumpPrice: 0 });
+    const configuredLinks = pumpTankLinksFor(pumpTankLinks, stationId, product.id);
+    for (const link of configuredLinks) {
+      const pumpNumber = Number(link.pumpNumber || 1);
+      productLines.set(pumpNumber, {
+        productId: product.id,
+        pumpNumber,
+        tankNumber: Number(link.tankNumber || 1),
+        cashDeposited: 0,
+        pumpPrice: 0
+      });
     }
+
+    lines.push(...[...productLines.values()].sort((a, b) => a.pumpNumber - b.pumpNumber));
   }
   return lines;
 }
@@ -747,7 +754,7 @@ function Dashboard({ data, expenses }) {
                 <div><dt>Gross profit</dt><dd>{money(group.totalGrossProfit)}</dd></div>
                 <div><dt>Revenue</dt><dd>{money(group.totalRevenue)}</dd></div>
               </dl>
-              {group.tankCount > 1 && (
+              {(group.tankCount > 1 || group.pumps.some((p) => (p.linkedPumps || []).length > 1)) && (
                 <div className="pump-breakdown">
                   {group.pumps.map(p => (
                     <div key={p.tankNumber || p.pumpNumber} className="pump-breakdown-row">
@@ -1456,17 +1463,13 @@ function ProductSettlementLines({ data, forms, updateDepositLine }) {
       {forms.deposit.lines.map((line) => {
         const pump = line.pumpNumber || 1;
         const tank = line.tankNumber || pump;
-        // Check if this product has multiple pumps
-        const siblingsCount = forms.deposit.lines.filter(l => l.productId === line.productId).length;
-        const label = siblingsCount > 1
-          ? `${productName(data, line.productId)} — Pump ${pump}`
-          : productName(data, line.productId);
-        const displayLabel = siblingsCount > 1
-          ? `${productName(data, line.productId)} - Pump ${pump} -> Tank ${tank}`
-          : label;
+        const productLabel = productName(data, line.productId);
         return (
           <div className="product-line" key={`${line.productId}-${pump}`}>
-            <strong>{displayLabel}</strong>
+            <div className="route-label" aria-label={`${productLabel}: Pump ${pump} to Tank ${tank}`}>
+              <strong>{productLabel}</strong>
+              <span>Pump {pump} -&gt; Tank {tank}</span>
+            </div>
             <InputField
               label="Cash deposited"
               type="number"
@@ -1563,13 +1566,19 @@ function Setup({ reference, forms, updateForm, submit, submitPumpTankLink, datab
             <SelectField
               label="Station"
               value={forms.pumpTankLink.stationId}
-              onChange={(v) => updateForm("pumpTankLink", "stationId", v)}
+              onChange={(v) => {
+                updateForm("pumpTankLink", "stationId", v);
+                updateForm("pumpTankLink", "tankNumber", 1);
+              }}
               options={reference.stations.map((i) => ({ value: i.id, label: i.name }))}
             />
             <SelectField
               label="Product"
               value={forms.pumpTankLink.productId}
-              onChange={(v) => updateForm("pumpTankLink", "productId", v)}
+              onChange={(v) => {
+                updateForm("pumpTankLink", "productId", v);
+                updateForm("pumpTankLink", "tankNumber", 1);
+              }}
               options={reference.products.map((i) => ({ value: i.id, label: i.name }))}
             />
             <InputField

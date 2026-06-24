@@ -12,6 +12,11 @@ const uuid = (v) =>
     ? v
     : null;
 
+const isMissingRelationError = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("does not exist") || message.includes("schema cache");
+};
+
 // ---------------------------------------------------------------------------
 // Column mappers — Supabase snake_case <-> app camelCase
 // ---------------------------------------------------------------------------
@@ -194,7 +199,7 @@ const loadFromSupabase = async () => {
 
   const firstError = e1 || e2 || e3 || e4 || e5 || e6 || e7 || e8 || e9 || e10;
   if (firstError) throw new Error(firstError.message);
-  if (e11 && !String(e11.message || "").includes("does not exist")) {
+  if (e11 && !isMissingRelationError(e11)) {
     throw new Error(e11.message);
   }
 
