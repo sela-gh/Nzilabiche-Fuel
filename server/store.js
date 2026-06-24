@@ -59,6 +59,7 @@ const mapCycle = (row) => ({
   productId: row.product_id,
   depotTripId: row.depot_trip_id || null,
   pumpNumber: Number(row.pump_number || 1),
+  tankNumber: Number(row.tank_number || row.pump_number || 1),
   status: row.status === "open" ? "active" : row.status,
   openedAt: row.opened_at,
   closedAt: row.closed_at,
@@ -88,7 +89,18 @@ const mapDeposit = (row) => ({
   estimatedLitersSold: Number(row.estimated_liters_sold || 0),
   shift: row.shift || 'day',
   paymentMethod: row.payment_method || 'cash',
-  pumpNumber: Number(row.pump_number || 1)
+  pumpNumber: Number(row.pump_number || 1),
+  tankNumber: Number(row.tank_number || row.pump_number || 1)
+});
+
+const mapPumpTankLink = (row) => ({
+  id: row.id,
+  stationId: row.station_id,
+  productId: row.product_id,
+  pumpNumber: Number(row.pump_number || 1),
+  tankNumber: Number(row.tank_number || 1),
+  createdAt: row.created_at,
+  updatedAt: row.updated_at
 });
 
 const mapInternalUse = (row) => ({
@@ -164,7 +176,8 @@ const loadFromSupabase = async () => {
     { data: internalUses, error: e7 },
     { data: pumpReadings, error: e8 },
     { data: expenses, error: e9 },
-    { data: debts, error: e10 }
+    { data: debts, error: e10 },
+    { data: pumpTankLinks, error: e11 }
   ] = await Promise.all([
     supabase.from("petrol_stations").select("*").eq("status", "active").order("created_at"),
     supabase.from("fuel_products").select("*").eq("status", "active").order("name"),
@@ -175,11 +188,15 @@ const loadFromSupabase = async () => {
     supabase.from("internal_fuel_use").select("*").order("date"),
     supabase.from("pump_meter_readings").select("*").order("date"),
     supabase.from("expenses").select("*").order("date", { ascending: false }),
-    supabase.from("debts").select("*").order("opened_at", { ascending: false })
+    supabase.from("debts").select("*").order("opened_at", { ascending: false }),
+    supabase.from("pump_tank_links").select("*").order("pump_number")
   ]);
 
   const firstError = e1 || e2 || e3 || e4 || e5 || e6 || e7 || e8 || e9 || e10;
   if (firstError) throw new Error(firstError.message);
+  if (e11 && !String(e11.message || "").includes("does not exist")) {
+    throw new Error(e11.message);
+  }
 
   const mappedDepotTrips = (depotTrips || []).map(mapDepotTrip);
   console.log("[loadFromSupabase] depot trip IDs:", mappedDepotTrips.map((t) => t.id));
@@ -198,7 +215,8 @@ const loadFromSupabase = async () => {
     priceHistory: [],
     auditLogs: [],
     expenses: (expenses || []).map(mapExpense),
-    debts: (debts || []).map(mapDebt)
+    debts: (debts || []).map(mapDebt),
+    pumpTankLinks: e11 ? [] : (pumpTankLinks || []).map(mapPumpTankLink)
   };
 };
 
@@ -273,7 +291,8 @@ export const saveDeposit = async (deposit) => {
       estimated_liters_sold: deposit.estimatedLitersSold,
       shift: deposit.shift || "day",
       payment_method: deposit.paymentMethod || "cash",
-      pump_number: deposit.pumpNumber || 1
+      pump_number: deposit.pumpNumber || 1,
+      tank_number: deposit.tankNumber || deposit.pumpNumber || 1
     })
     .select()
     .single();
@@ -298,6 +317,7 @@ export const saveCycle = async (cycle) => {
       product_id: uuid(cycle.productId),
       depot_trip_id: uuid(cycle.depotTripId),
       pump_number: cycle.pumpNumber || 1,
+      tank_number: cycle.tankNumber || cycle.pumpNumber || 1,
       status: cycle.status === "active" ? "open" : cycle.status,
       opened_at: cycle.openedAt,
       closed_at: cycle.closedAt,
@@ -322,12 +342,33 @@ export const saveCycle = async (cycle) => {
   return mapCycle(data);
 };
 
+export const savePumpTankLink = async (link) => {
+  if (!isSupabaseConfigured) return link;
+  const { data, error } = await supabase
+    .from("pump_tank_links")
+    .upsert(
+      {
+        station_id: uuid(link.stationId),
+        product_id: uuid(link.productId),
+        pump_number: link.pumpNumber || 1,
+        tank_number: link.tankNumber || 1,
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: "station_id,product_id,pump_number" }
+    )
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapPumpTankLink(data);
+};
+
 export const updateCycle = async (cycle) => {
   console.log("[updateCycle] id:", cycle.id);
   const { error } = await supabase
     .from("delivery_cycles")
     .update({
       status: cycle.status === "active" ? "open" : cycle.status,
+      tank_number: cycle.tankNumber || cycle.pumpNumber || 1,
       closed_at: cycle.closedAt,
       close_reason: cycle.closeReason,
       expected_closing_stock_liters: cycle.expectedClosingStockLiters,

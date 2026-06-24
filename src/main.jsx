@@ -13,6 +13,7 @@ import {
   Factory,
   Gauge,
   LayoutDashboard,
+  Link2,
   Moon,
   Phone,
   Plus,
@@ -230,6 +231,12 @@ const emptyForms = {
     capacityLiters: 0,
     notes: ""
   },
+  pumpTankLink: {
+    stationId: "",
+    productId: "",
+    pumpNumber: 1,
+    tankNumber: 1
+  },
   expense: {
     stationId: "",
     date: eatDateTimeInput(),
@@ -257,21 +264,43 @@ const emptyForms = {
   }
 };
 
-// Build deposit lines based on station tank configuration
-// For each product, if the station has 2 tanks, show 2 pump rows
-function buildDepositLines(products, stations, stationId) {
+function productTankCount(station, product) {
+  const name = (product?.name || "").toLowerCase();
+  if (!station) return 1;
+  if (name.includes("diesel") || name.includes("ago")) return station.dieselTankCount || 1;
+  if (name.includes("kerosene")) return station.keroseneTankCount || 1;
+  return station.petrolTankCount || 1;
+}
+
+function pumpTankLinksFor(links, stationId, productId) {
+  return (links || [])
+    .filter((link) => link.stationId === stationId && link.productId === productId)
+    .sort((a, b) => Number(a.pumpNumber || 1) - Number(b.pumpNumber || 1));
+}
+
+// Build deposit lines from explicit pump-to-tank links. If a station has not
+// been mapped yet, keep the legacy pump number = tank number behavior.
+function buildDepositLines(products, stations, stationId, pumpTankLinks = []) {
   const station = stations.find(s => s.id === stationId);
   const lines = [];
   for (const product of products) {
-    const name = (product.name || "").toLowerCase();
-    let tankCount = 1;
-    if (station) {
-      if (name.includes("diesel") || name.includes("ago")) tankCount = station.dieselTankCount || 1;
-      else if (name.includes("kerosene")) tankCount = station.keroseneTankCount || 1;
-      else tankCount = station.petrolTankCount || 1;
+    const configuredLinks = pumpTankLinksFor(pumpTankLinks, stationId, product.id);
+    if (configuredLinks.length) {
+      for (const link of configuredLinks) {
+        lines.push({
+          productId: product.id,
+          pumpNumber: Number(link.pumpNumber || 1),
+          tankNumber: Number(link.tankNumber || 1),
+          cashDeposited: 0,
+          pumpPrice: 0
+        });
+      }
+      continue;
     }
+
+    const tankCount = productTankCount(station, product);
     for (let pump = 1; pump <= tankCount; pump++) {
-      lines.push({ productId: product.id, pumpNumber: pump, cashDeposited: 0, pumpPrice: 0 });
+      lines.push({ productId: product.id, pumpNumber: pump, tankNumber: pump, cashDeposited: 0, pumpPrice: 0 });
     }
   }
   return lines;
@@ -304,7 +333,12 @@ function App() {
       deposit: {
         ...current.deposit,
         stationId: current.deposit.stationId || firstStation,
-        lines: buildDepositLines(bootstrap.products, bootstrap.stations, current.deposit.stationId || firstStation)
+        lines: buildDepositLines(
+          bootstrap.products,
+          bootstrap.stations,
+          current.deposit.stationId || firstStation,
+          bootstrap.pumpTankLinks || []
+        )
       },
       depot: {
         ...current.depot,
@@ -315,6 +349,11 @@ function App() {
         ...current.delivery,
         stationId: current.delivery.stationId || firstStation,
         productId: current.delivery.productId || firstProduct
+      },
+      pumpTankLink: {
+        ...current.pumpTankLink,
+        stationId: current.pumpTankLink.stationId || firstStation,
+        productId: current.pumpTankLink.productId || firstProduct
       },
       internal: {
         ...current.internal,
@@ -355,8 +394,14 @@ function App() {
   }, []);
 
   const reference = useMemo(() => {
-    if (!data) return { stations: [], products: [], depotTrips: [], lorries: [] };
-    return { stations: data.stations, products: data.products, depotTrips: data.depotTrips, lorries: data.lorries };
+    if (!data) return { stations: [], products: [], depotTrips: [], lorries: [], pumpTankLinks: [] };
+    return {
+      stations: data.stations,
+      products: data.products,
+      depotTrips: data.depotTrips,
+      lorries: data.lorries,
+      pumpTankLinks: data.pumpTankLinks || []
+    };
   }, [data]);
 
   const updateForm = (key, field, value) => {
@@ -389,6 +434,33 @@ function App() {
       }
       await api.post(path, payload);
       setNotice(message);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const submitPumpTankLink = async () => {
+    setError("");
+    setNotice("");
+    const f = forms.pumpTankLink;
+    if (!f.stationId || !f.productId) {
+      setError("Please select a station and product.");
+      return;
+    }
+    if (Number(f.pumpNumber) <= 0 || Number(f.tankNumber) <= 0) {
+      setError("Pump and tank numbers must be greater than zero.");
+      return;
+    }
+
+    try {
+      await api.post("/api/pump-tank-links", {
+        stationId: f.stationId,
+        productId: f.productId,
+        pumpNumber: Number(f.pumpNumber),
+        tankNumber: Number(f.tankNumber)
+      });
+      setNotice(`Pump ${f.pumpNumber} linked to tank ${f.tankNumber}.`);
       await load();
     } catch (err) {
       setError(err.message);
@@ -522,6 +594,7 @@ function App() {
     updateForm,
     updateDepositLine,
     submit,
+    submitPumpTankLink,
     submitExpense,
     submitDebtIssue,
     submitDebtSettlement,
@@ -677,10 +750,13 @@ function Dashboard({ data, expenses }) {
               {group.tankCount > 1 && (
                 <div className="pump-breakdown">
                   {group.pumps.map(p => (
-                    <div key={p.pumpNumber} className="pump-breakdown-row">
-                      <span>Pump {p.pumpNumber}</span>
+                    <div key={p.tankNumber || p.pumpNumber} className="pump-breakdown-row">
+                      <span>Tank {p.tankNumber || p.pumpNumber}</span>
                       <span>{liters(p.expectedStock)} remaining</span>
                       <span className="pump-sold">{liters(p.estimatedLitersSold)} sold</span>
+                      <span className="pump-sold">
+                        {(p.linkedPumps || []).length ? `Pumps ${(p.linkedPumps || []).join(", ")}` : "No linked pumps"}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -690,7 +766,7 @@ function Dashboard({ data, expenses }) {
         </div>
       </section>
 
-      <section className="section-band two-column">
+      <section className="two-column">
         <div>
           <div className="section-heading">
             <h2>Recent cash deposits</h2>
@@ -747,13 +823,17 @@ function Deposits({ data, reference, forms, updateForm, updateDepositLine, submi
             value={forms.deposit.stationId}
             onChange={(value) => {
               updateForm("deposit", "stationId", value);
-              // Rebuild lines for new station's tank config
               setForms(current => ({
                 ...current,
                 deposit: {
                   ...current.deposit,
                   stationId: value,
-                  lines: buildDepositLines(reference.products, reference.stations, value)
+                  lines: buildDepositLines(
+                    reference.products,
+                    reference.stations,
+                    value,
+                    reference.pumpTankLinks
+                  )
                 }
               }));
             }}
@@ -814,12 +894,14 @@ function Deposits({ data, reference, forms, updateForm, updateDepositLine, submi
 
       <DataTable
         title="Deposit history"
-        columns={["Station", "Shift", "Payment", "Product", "Cash", "Price", "Liters"]}
+        columns={["Station", "Shift", "Payment", "Product", "Pump", "Tank", "Cash", "Price", "Liters"]}
         rows={[...data.dailyDeposits].reverse().map((deposit) => [
           stationName(data, deposit.stationId),
           shiftBadge(deposit.shift),
           paymentBadge(deposit.paymentMethod),
           productName(data, deposit.productId),
+          `Pump ${deposit.pumpNumber || 1}`,
+          `Tank ${deposit.tankNumber || deposit.pumpNumber || 1}`,
           money(deposit.cashDeposited),
           money(deposit.pumpPrice),
           liters(deposit.estimatedLitersSold)
@@ -835,15 +917,7 @@ function Deposits({ data, reference, forms, updateForm, updateDepositLine, submi
 function Deliveries({ data, reference, forms, updateForm, submit, setError, setNotice, load }) {
   const selectedStation = reference.stations.find(s => s.id === forms.delivery.stationId);
   const selectedProduct = reference.products.find(p => p.id === forms.delivery.productId);
-  const productName_ = (selectedProduct?.name || "").toLowerCase();
-
-  // Determine tank count for selected station+product
-  let tankCount = 1;
-  if (selectedStation) {
-    if (productName_.includes("diesel") || productName_.includes("ago")) tankCount = selectedStation.dieselTankCount || 1;
-    else if (productName_.includes("kerosene")) tankCount = selectedStation.keroseneTankCount || 1;
-    else tankCount = selectedStation.petrolTankCount || 1;
-  }
+  const tankCount = productTankCount(selectedStation, selectedProduct);
 
   const depotOptionsFor = (pid) => [
     { value: "", label: "-- Select depot trip --" },
@@ -878,7 +952,7 @@ function Deliveries({ data, reference, forms, updateForm, submit, setError, setN
     try {
       for (const pump of activePumps) {
         if (Number(pump.litersDelivered) <= 0) continue;
-        if (!pump.depotTripId) throw new Error(`Please select a depot trip for Pump ${pump.pumpNumber}.`);
+        if (!pump.depotTripId) throw new Error(`Please select a depot trip for Tank ${pump.pumpNumber}.`);
         await fetch("/api/deliveries", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -889,7 +963,8 @@ function Deliveries({ data, reference, forms, updateForm, submit, setError, setN
             depotTripId: pump.depotTripId,
             litersDelivered: Number(pump.litersDelivered),
             preDeliveryDipstickLiters: Number(pump.preDeliveryDipstickLiters || 0),
-            pumpNumber: pump.pumpNumber
+            pumpNumber: pump.pumpNumber,
+            tankNumber: pump.pumpNumber
           })
         }).then(async r => {
           const body = await r.json();
@@ -907,7 +982,7 @@ function Deliveries({ data, reference, forms, updateForm, submit, setError, setN
     <section className="view-grid">
       <EntryPanel
         title="Delivery entry"
-        description="Each pump is entered separately but submitted in one go. A delivery closes the previous cycle and opens the next."
+        description="Each physical tank is entered separately but submitted in one go. A delivery closes the previous cycle and opens the next."
         icon={Truck}
       >
         <FormGrid>
@@ -919,7 +994,7 @@ function Deliveries({ data, reference, forms, updateForm, submit, setError, setN
         {activePumps.map((pump) => (
           <div key={pump.pumpNumber} className="pump-delivery-row">
             <div className="pump-delivery-header">
-              <strong>Pump {pump.pumpNumber}{tankCount > 1 ? ` (Tank ${pump.pumpNumber})` : ""}</strong>
+              <strong>Tank {pump.pumpNumber}</strong>
             </div>
             <FormGrid>
               <SelectField
@@ -953,10 +1028,11 @@ function Deliveries({ data, reference, forms, updateForm, submit, setError, setN
 
       <DataTable
         title="Delivery cycles"
-        columns={["Station", "Product", "Status", "Opening", "Variance"]}
+        columns={["Station", "Product", "Tank", "Status", "Opening", "Variance"]}
         rows={[...data.cycles].reverse().map((cycle) => [
           stationName(data, cycle.stationId),
           productName(data, cycle.productId),
+          `Tank ${cycle.tankNumber || cycle.pumpNumber || 1}`,
           cycle.status,
           liters(cycle.openingStockLiters),
           cycle.varianceLiters === null ? "Active" : liters(cycle.varianceLiters)
@@ -1379,14 +1455,18 @@ function ProductSettlementLines({ data, forms, updateDepositLine }) {
     <div className="settlement-lines">
       {forms.deposit.lines.map((line) => {
         const pump = line.pumpNumber || 1;
+        const tank = line.tankNumber || pump;
         // Check if this product has multiple pumps
         const siblingsCount = forms.deposit.lines.filter(l => l.productId === line.productId).length;
         const label = siblingsCount > 1
           ? `${productName(data, line.productId)} — Pump ${pump}`
           : productName(data, line.productId);
+        const displayLabel = siblingsCount > 1
+          ? `${productName(data, line.productId)} - Pump ${pump} -> Tank ${tank}`
+          : label;
         return (
           <div className="product-line" key={`${line.productId}-${pump}`}>
-            <strong>{label}</strong>
+            <strong>{displayLabel}</strong>
             <InputField
               label="Cash deposited"
               type="number"
@@ -1410,7 +1490,15 @@ function ProductSettlementLines({ data, forms, updateDepositLine }) {
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
-function Setup({ reference, forms, updateForm, submit, databaseStatus }) {
+function Setup({ reference, forms, updateForm, submit, submitPumpTankLink, databaseStatus }) {
+  const selectedLinkStation = reference.stations.find((station) => station.id === forms.pumpTankLink.stationId);
+  const selectedLinkProduct = reference.products.find((product) => product.id === forms.pumpTankLink.productId);
+  const selectedTankCount = productTankCount(selectedLinkStation, selectedLinkProduct);
+  const tankOptions = Array.from({ length: selectedTankCount }, (_, index) => {
+    const tankNumber = index + 1;
+    return { value: String(tankNumber), label: `Tank ${tankNumber}` };
+  });
+
   return (
     <section className="view-grid">
       <section className={`database-status ${databaseStatus.connected ? "connected" : "pending"}`}>
@@ -1467,6 +1555,52 @@ function Setup({ reference, forms, updateForm, submit, databaseStatus }) {
             Add lorry
           </ActionButton>
         </EntryPanel>
+      </section>
+
+      <section className="two-column">
+        <EntryPanel title="Link pumps to tank" description="Map each physical pump to the tank it draws from for this station and product." icon={Link2}>
+          <FormGrid>
+            <SelectField
+              label="Station"
+              value={forms.pumpTankLink.stationId}
+              onChange={(v) => updateForm("pumpTankLink", "stationId", v)}
+              options={reference.stations.map((i) => ({ value: i.id, label: i.name }))}
+            />
+            <SelectField
+              label="Product"
+              value={forms.pumpTankLink.productId}
+              onChange={(v) => updateForm("pumpTankLink", "productId", v)}
+              options={reference.products.map((i) => ({ value: i.id, label: i.name }))}
+            />
+            <InputField
+              label="Pump number"
+              type="number"
+              value={forms.pumpTankLink.pumpNumber}
+              onChange={(v) => updateForm("pumpTankLink", "pumpNumber", v)}
+            />
+            <SelectField
+              label="Tank"
+              value={String(forms.pumpTankLink.tankNumber)}
+              onChange={(v) => updateForm("pumpTankLink", "tankNumber", Number(v))}
+              options={tankOptions}
+            />
+          </FormGrid>
+          <ActionButton onClick={submitPumpTankLink}>
+            <Link2 size={18} />
+            Link pump to tank
+          </ActionButton>
+        </EntryPanel>
+
+        <DataTable
+          title="Pump to tank links"
+          columns={["Station", "Product", "Pump", "Tank"]}
+          rows={(reference.pumpTankLinks || []).map((link) => [
+            reference.stations.find((station) => station.id === link.stationId)?.name || "Unknown station",
+            reference.products.find((product) => product.id === link.productId)?.name || "Unknown product",
+            `Pump ${link.pumpNumber}`,
+            `Tank ${link.tankNumber}`
+          ])}
+        />
       </section>
 
       <section className="section-band two-column">

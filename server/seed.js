@@ -13,8 +13,8 @@ export const createSeedState = () => ({
   expenses: [],
   debts: [],
   debtPayments: [],
+  pumpTankLinks: [],
   internalFuelUses: [],
   pumpMeterReadings: [],
   auditLogs: []
 });
-

@@ -8,6 +8,7 @@ import {
   createDepositSettlement,
   createDepotTrip,
   createLorry,
+  createPumpTankLink,
   createStation,
   createExpense,
   issueDebt,
@@ -17,7 +18,7 @@ import {
   recordInternalFuelUse,
   recordPumpMeterReading
 } from "./domain.js";
-import { loadState, withState, updateDebt } from "./store.js";
+import { loadState, withState, updateDebt, savePumpTankLink } from "./store.js";
 import { getSupabaseStatus } from "./supabase.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -79,6 +80,14 @@ const handleApi = async (req, res) => {
       const payload = await readJsonBody(req);
       const result = await withState((state) => createLorry(state, payload));
       sendJson(res, 201, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/pump-tank-links") {
+      const payload = await readJsonBody(req);
+      const result = await withState((state) => createPumpTankLink(state, payload));
+      const saved = await savePumpTankLink(result);
+      sendJson(res, 201, saved);
       return;
     }
 

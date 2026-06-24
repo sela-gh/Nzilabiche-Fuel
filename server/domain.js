@@ -9,22 +9,58 @@ const between = (date, start, end) => {
   return value >= from && value <= to;
 };
 
-export const getActiveCycle = (state, stationId, productId, pumpNumber = 1) =>
+const positiveInt = (value, fallback = 1) => {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : fallback;
+};
+
+export const getTankCount = (station, productId, products) => {
+  const product = (products || []).find(p => p.id === productId);
+  const name = (product?.name || "").toLowerCase();
+  if (name.includes("diesel") || name.includes("ago")) return station.dieselTankCount || 1;
+  if (name.includes("kerosene")) return station.keroseneTankCount || 1;
+  return station.petrolTankCount || 1;
+};
+
+export const getTankNumberForPump = (state, stationId, productId, pumpNumber = 1) => {
+  const pump = positiveInt(pumpNumber);
+  const link = (state.pumpTankLinks || []).find(
+    (item) =>
+      item.stationId === stationId &&
+      item.productId === productId &&
+      positiveInt(item.pumpNumber) === pump
+  );
+  if (link) return positiveInt(link.tankNumber);
+
+  const station = state.stations.find((item) => item.id === stationId);
+  const tankCount = station ? getTankCount(station, productId, state.products) : 1;
+  return Math.max(1, Math.min(pump, tankCount));
+};
+
+const getCycleTankNumber = (cycle) => positiveInt(cycle.tankNumber || cycle.pumpNumber);
+
+const getDepositTankNumber = (state, deposit) =>
+  positiveInt(
+    deposit.tankNumber ||
+      getTankNumberForPump(state, deposit.stationId, deposit.productId, deposit.pumpNumber)
+  );
+
+export const getActiveCycle = (state, stationId, productId, tankNumber = 1) =>
   state.cycles.find(
     (cycle) =>
       cycle.stationId === stationId &&
       cycle.productId === productId &&
       cycle.status === "active" &&
-      (cycle.pumpNumber || 1) === pumpNumber
+      getCycleTankNumber(cycle) === positiveInt(tankNumber)
   );
 
 export const calculateCycleSnapshot = (state, cycle, closingAt = new Date().toISOString()) => {
-  const cyclePump = cycle.pumpNumber || 1;
+  const cycleTank = getCycleTankNumber(cycle);
   const deposits = state.dailyDeposits.filter(
     (deposit) =>
       deposit.stationId === cycle.stationId &&
       deposit.productId === cycle.productId &&
-      (deposit.pumpNumber || 1) === cyclePump &&
+      getDepositTankNumber(state, deposit) === cycleTank &&
       between(deposit.date, cycle.openedAt, closingAt)
   );
 
@@ -32,6 +68,7 @@ export const calculateCycleSnapshot = (state, cycle, closingAt = new Date().toIS
     (entry) =>
       entry.stationId === cycle.stationId &&
       entry.productId === cycle.productId &&
+      positiveInt(entry.tankNumber || 1) === cycleTank &&
       between(entry.date, cycle.openedAt, closingAt)
   );
 
@@ -190,7 +227,10 @@ export const createDeposit = (state, payload) => {
     date: payload.date || new Date().toISOString(),
     shift: payload.shift || "day",
     paymentMethod: payload.paymentMethod || "cash",
-    pumpNumber: Number(payload.pumpNumber || 1),
+    pumpNumber: positiveInt(payload.pumpNumber),
+    tankNumber: positiveInt(
+      payload.tankNumber || getTankNumberForPump(state, payload.stationId, payload.productId, payload.pumpNumber)
+    ),
     cashDeposited: round(cashDeposited),
     pumpPrice: round(pumpPrice),
     estimatedLitersSold: round(cashDeposited / pumpPrice)
@@ -228,11 +268,57 @@ export const createDepositSettlement = (state, payload) => {
       date: payload.date,
       shift: payload.shift || "day",
       paymentMethod: payload.paymentMethod || "cash",
-      pumpNumber: Number(line.pumpNumber || 1),
+      pumpNumber: positiveInt(line.pumpNumber),
+      tankNumber: positiveInt(
+        line.tankNumber || getTankNumberForPump(state, payload.stationId, line.productId, line.pumpNumber)
+      ),
       cashDeposited: line.cashDeposited,
       pumpPrice: line.pumpPrice
     })
   );
+};
+
+export const createPumpTankLink = (state, payload) => {
+  const station = state.stations.find((item) => item.id === payload.stationId);
+  const product = state.products.find((item) => item.id === payload.productId);
+  const pumpNumber = positiveInt(payload.pumpNumber);
+  const tankNumber = positiveInt(payload.tankNumber);
+
+  if (!station || !product) {
+    throw new Error("Station and product are required.");
+  }
+
+  const tankCount = getTankCount(station, product.id, state.products);
+  if (tankNumber > tankCount) {
+    throw new Error(`Tank ${tankNumber} does not exist for ${product.name} at this station.`);
+  }
+
+  if (!state.pumpTankLinks) state.pumpTankLinks = [];
+  const existing = state.pumpTankLinks.find(
+    (item) =>
+      item.stationId === station.id &&
+      item.productId === product.id &&
+      positiveInt(item.pumpNumber) === pumpNumber
+  );
+
+  if (existing) {
+    existing.tankNumber = tankNumber;
+    existing.updatedAt = new Date().toISOString();
+    return existing;
+  }
+
+  const link = {
+    id: id("pump-tank-link"),
+    stationId: station.id,
+    productId: product.id,
+    pumpNumber,
+    tankNumber,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  state.pumpTankLinks.push(link);
+  return link;
 };
 
 export const recordInternalFuelUse = (state, payload) => {
@@ -418,8 +504,11 @@ export const settleDebt = (state, payload) => {
 
 export const recordDelivery = (state, payload) => {
   const deliveredAt = payload.deliveredAt || new Date().toISOString();
-  const pumpNumber = Number(payload.pumpNumber || 1);
-  const activeCycle = getActiveCycle(state, payload.stationId, payload.productId, pumpNumber);
+  const pumpNumber = positiveInt(payload.pumpNumber || payload.tankNumber);
+  const tankNumber = positiveInt(
+    payload.tankNumber || getTankNumberForPump(state, payload.stationId, payload.productId, pumpNumber)
+  );
+  const activeCycle = getActiveCycle(state, payload.stationId, payload.productId, tankNumber);
   const depotTrip = state.depotTrips.find((trip) => trip.id === payload.depotTripId);
   const deliveryLiters = Number(payload.litersDelivered);
 
@@ -459,6 +548,7 @@ export const recordDelivery = (state, payload) => {
     productId: payload.productId,
     depotTripId: payload.depotTripId,
     pumpNumber,
+    tankNumber,
     status: "active",
     openedAt: deliveredAt,
     closedAt: null,
@@ -512,6 +602,8 @@ export const closeMonth = (state, payload) => {
     stationId: activeCycle.stationId,
     productId: activeCycle.productId,
     depotTripId: activeCycle.depotTripId,
+    pumpNumber: activeCycle.pumpNumber || getCycleTankNumber(activeCycle),
+    tankNumber: getCycleTankNumber(activeCycle),
     status: "active",
     openedAt: closedAt,
     closedAt: null,
@@ -531,14 +623,6 @@ export const closeMonth = (state, payload) => {
   return { closedCycle, rolloverCycle };
 };
 
-export const getTankCount = (station, productId, products) => {
-  const product = (products || []).find(p => p.id === productId);
-  const name = (product?.name || "").toLowerCase();
-  if (name.includes("diesel") || name.includes("ago")) return station.dieselTankCount || 1;
-  if (name.includes("kerosene")) return station.keroseneTankCount || 1;
-  return station.petrolTankCount || 1;
-};
-
 export const getDashboard = (state) => {
   const activeCycles = state.cycles.filter((cycle) => cycle.status === "active");
   const cycleCards = activeCycles.map((cycle) => {
@@ -549,14 +633,25 @@ export const getDashboard = (state) => {
       ? Math.max(0, Math.min(100, (snapshot.expectedClosingStockLiters / station.tankCapacityLiters) * 100))
       : 0;
 
-    // Per-pump breakdown for multi-tank stations
-    const pumpNum = cycle.pumpNumber || 1;
+    const pumpNum = positiveInt(cycle.pumpNumber);
+    const tankNum = getCycleTankNumber(cycle);
     const tankCount = station ? getTankCount(station, cycle.productId, state.products) : 1;
+    const linkedPumps = (state.pumpTankLinks || [])
+      .filter(
+        (link) =>
+          link.stationId === cycle.stationId &&
+          link.productId === cycle.productId &&
+          positiveInt(link.tankNumber) === tankNum
+      )
+      .map((link) => positiveInt(link.pumpNumber))
+      .sort((a, b) => a - b);
 
     return {
       ...cycle,
       pumpNumber: pumpNum,
+      tankNumber: tankNum,
       tankCount,
+      linkedPumps,
       stationName: station?.name,
       productName: product?.name,
       tankCapacityLiters: station?.tankCapacityLiters,
@@ -633,6 +728,8 @@ export const getDashboard = (state) => {
         stockPercent: totalCapacity > 0 ? round(Math.max(0, Math.min(100, (totalExpected / totalCapacity) * 100))) : 0,
         pumps: siblings.map(s => ({
           pumpNumber: s.pumpNumber || 1,
+          tankNumber: s.tankNumber || s.pumpNumber || 1,
+          linkedPumps: s.linkedPumps || [],
           cycleId: s.id,
           openedAt: s.openedAt,
           blendedCostPerLiter: s.blendedCostPerLiter,
@@ -682,5 +779,6 @@ export const getBootstrap = (state) => ({
   auditLogs: state.auditLogs,
   expenses: state.expenses || [],
   debts: state.debts || [],
+  pumpTankLinks: state.pumpTankLinks || [],
   dashboard: getDashboard(state)
 });
