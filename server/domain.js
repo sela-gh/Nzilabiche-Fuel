@@ -400,6 +400,53 @@ export const createExpense = (state, payload) => {
   return expense;
 };
 
+export const createProductSale = (state, payload) => {
+  const quantity = Number(payload.quantity);
+  const unitPrice = Number(payload.unitPrice);
+
+  if (!payload.stationId) {
+    throw new Error("Station is required for product sales.");
+  }
+
+  if (!payload.itemName?.trim() || !payload.category?.trim()) {
+    throw new Error("Item name and category are required for product sales.");
+  }
+
+  if (quantity <= 0 || unitPrice <= 0) {
+    throw new Error("Quantity and unit price must be greater than zero.");
+  }
+
+  const totalAmount = round(quantity * unitPrice, 2);
+  const sale = {
+    id: id("product-sale"),
+    stationId: payload.stationId,
+    date: payload.date || new Date().toISOString(),
+    shift: payload.shift || "day",
+    itemName: payload.itemName.trim(),
+    category: payload.category.trim(),
+    quantity: round(quantity, 3),
+    unitPrice: round(unitPrice, 2),
+    totalAmount,
+    paymentMethod: payload.paymentMethod || "cash",
+    notes: payload.notes?.trim() || "",
+    createdAt: new Date().toISOString()
+  };
+
+  if (!state.productSales) state.productSales = [];
+  state.productSales.push(sale);
+
+  state.auditLogs.push({
+    id: id("audit"),
+    entity: "Product_Sales",
+    entityId: sale.id,
+    action: "created",
+    timestamp: sale.createdAt,
+    reason: `Product sale recorded: ${sale.itemName}`
+  });
+
+  return sale;
+};
+
 
 
 export const issueDebt = (state, payload) => {
@@ -460,6 +507,7 @@ export const issueDebt = (state, payload) => {
     amount: round(amount),
     paymentMethod: payload.paymentMethod || "cash",
     debtId: debt.id,
+    debtRef: debt,
     createdAt: new Date().toISOString()
   };
   state.expenses.push(expense);
@@ -685,6 +733,20 @@ export const getDashboard = (state) => {
   // position while it is still outstanding; settled debt is cash recovered.
   const expenses = state.expenses || [];
   const debts = state.debts || [];
+  const productSales = state.productSales || [];
+  const fuelIncome = state.dailyDeposits.reduce(
+    (sum, deposit) => sum + Number(deposit.cashDeposited || 0),
+    0
+  );
+  const productSalesIncome = productSales.reduce(
+    (sum, sale) => sum + Number(sale.totalAmount || 0),
+    0
+  );
+  const totalIncomeGenerated = fuelIncome + productSalesIncome;
+  const fuelPurchaseCost = state.depotTrips.reduce(
+    (sum, trip) => sum + Number(trip.totalPurchaseCost || 0),
+    0
+  );
   const operatingExpenses = expenses
     .filter((e) => e.category !== "Debt")
     .reduce((sum, e) => sum + Number(e.amount || 0), 0);
@@ -697,8 +759,8 @@ export const getDashboard = (state) => {
   const settledDebt = debts.reduce((sum, debt) => sum + Number(debt.settledAmount || 0), 0);
   const profitImpactExpenses = operatingExpenses + outstandingDebt;
 
-  // Calculate True Net Profit
   const netProfit = totalGrossProfit - profitImpactExpenses;
+  const netResult = totalIncomeGenerated - fuelPurchaseCost - profitImpactExpenses;
 
   // Group cycles by station+product to show combined + per-pump breakdown
   const cycleGroups = [];
@@ -754,7 +816,12 @@ export const getDashboard = (state) => {
       totalDebtOutstanding: round(outstandingDebt),
       totalDebtSettled: round(settledDebt),
       totalExpenses: round(profitImpactExpenses),
-      netProfit: round(netProfit)
+      netProfit: round(netProfit),
+      fuelIncome: round(fuelIncome),
+      productSalesIncome: round(productSalesIncome),
+      totalIncomeGenerated: round(totalIncomeGenerated),
+      fuelPurchaseCost: round(fuelPurchaseCost),
+      netResult: round(netResult)
     },
     cycleCards,
     cycleGroups,
@@ -763,6 +830,7 @@ export const getDashboard = (state) => {
       .slice(-8)
       .reverse(),
     recentDeposits: [...state.dailyDeposits].slice(-8).reverse(),
+    recentProductSales: [...productSales].slice(-8).reverse(),
     recentTrips: [...state.depotTrips].slice(-6).reverse()
   };
 };
@@ -774,6 +842,7 @@ export const getBootstrap = (state) => ({
   depotTrips: state.depotTrips,
   cycles: state.cycles,
   dailyDeposits: state.dailyDeposits,
+  productSales: state.productSales || [],
   internalFuelUses: state.internalFuelUses,
   pumpMeterReadings: state.pumpMeterReadings,
   auditLogs: state.auditLogs,

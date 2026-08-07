@@ -1,4 +1,4 @@
-import { supabase, isSupabaseConfigured } from "./supabase.js";
+import { supabase, isSupabaseConfigured, createSupabaseForToken } from "./supabase.js";
 import { createSeedState } from "./seed.js";
 
 // ---------------------------------------------------------------------------
@@ -141,6 +141,21 @@ const mapExpense = (row) => ({
   createdAt: row.created_at
 });
 
+const mapProductSale = (row) => ({
+  id: row.id,
+  stationId: row.station_id,
+  date: row.sale_date,
+  shift: row.shift || "day",
+  itemName: row.item_name,
+  category: row.category || "Other",
+  quantity: Number(row.quantity || 0),
+  unitPrice: Number(row.unit_price || 0),
+  totalAmount: Number(row.total_amount || 0),
+  paymentMethod: row.payment_method || "cash",
+  notes: row.notes || "",
+  createdAt: row.created_at
+});
+
 const mapDebt = (row) => ({
   id: row.id,
   stationId: row.station_id,
@@ -166,6 +181,39 @@ const mapDebtPayment = (row) => ({
   createdAt: row.created_at
 });
 
+const mapUserProfile = (row) => ({
+  userId: row.user_id,
+  fullName: row.full_name || "",
+  role: row.role,
+  stationId: row.station_id || null
+});
+
+const mapDailyShiftReport = (row) => ({
+  id: row.id,
+  stationId: row.station_id,
+  reportDate: row.report_date,
+  shift: row.shift,
+  status: row.status,
+  submittedBy: row.submitted_by,
+  submittedAt: row.submitted_at,
+  confirmedBy: row.confirmed_by,
+  confirmedAt: row.confirmed_at,
+  rejectedBy: row.rejected_by,
+  rejectedAt: row.rejected_at,
+  rejectionReason: row.rejection_reason || "",
+  pumpPrices: row.pump_prices || [],
+  meterLines: row.meter_lines || [],
+  dippingLines: row.dipping_lines || [],
+  creditLines: row.credit_lines || [],
+  settlementLines: row.settlement_lines || [],
+  expenseLines: row.expense_lines || [],
+  notes: row.notes || "",
+  totals: row.totals || {},
+  postedLedgerIds: row.posted_ledger_ids || {},
+  createdAt: row.created_at,
+  updatedAt: row.updated_at
+});
+
 // ---------------------------------------------------------------------------
 // Supabase loaders
 // ---------------------------------------------------------------------------
@@ -182,7 +230,8 @@ const loadFromSupabase = async () => {
     { data: pumpReadings, error: e8 },
     { data: expenses, error: e9 },
     { data: debts, error: e10 },
-    { data: pumpTankLinks, error: e11 }
+    { data: pumpTankLinks, error: e11 },
+    { data: productSales, error: e12 }
   ] = await Promise.all([
     supabase.from("petrol_stations").select("*").eq("status", "active").order("created_at"),
     supabase.from("fuel_products").select("*").eq("status", "active").order("name"),
@@ -194,13 +243,17 @@ const loadFromSupabase = async () => {
     supabase.from("pump_meter_readings").select("*").order("date"),
     supabase.from("expenses").select("*").order("date", { ascending: false }),
     supabase.from("debts").select("*").order("opened_at", { ascending: false }),
-    supabase.from("pump_tank_links").select("*").order("pump_number")
+    supabase.from("pump_tank_links").select("*").order("pump_number"),
+    supabase.from("product_sales").select("*").order("sale_date", { ascending: false })
   ]);
 
   const firstError = e1 || e2 || e3 || e4 || e5 || e6 || e7 || e8 || e9 || e10;
   if (firstError) throw new Error(firstError.message);
   if (e11 && !isMissingRelationError(e11)) {
     throw new Error(e11.message);
+  }
+  if (e12 && !isMissingRelationError(e12)) {
+    throw new Error(e12.message);
   }
 
   const mappedDepotTrips = (depotTrips || []).map(mapDepotTrip);
@@ -220,6 +273,7 @@ const loadFromSupabase = async () => {
     priceHistory: [],
     auditLogs: [],
     expenses: (expenses || []).map(mapExpense),
+    productSales: e12 ? [] : (productSales || []).map(mapProductSale),
     debts: (debts || []).map(mapDebt),
     pumpTankLinks: e11 ? [] : (pumpTankLinks || []).map(mapPumpTankLink)
   };
@@ -444,6 +498,28 @@ export const saveExpense = async (expense) => {
   return mapExpense(data);
 };
 
+export const saveProductSale = async (sale) => {
+  if (!isSupabaseConfigured) return sale;
+  const { data, error } = await supabase
+    .from("product_sales")
+    .insert({
+      station_id: uuid(sale.stationId),
+      sale_date: sale.date,
+      shift: sale.shift || "day",
+      item_name: sale.itemName,
+      category: sale.category || "Other",
+      quantity: sale.quantity,
+      unit_price: sale.unitPrice,
+      total_amount: sale.totalAmount,
+      payment_method: sale.paymentMethod || "cash",
+      notes: sale.notes || ""
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapProductSale(data);
+};
+
 export const saveDebt = async (debt) => {
   const { data, error } = await supabase
     .from('debts')
@@ -494,6 +570,124 @@ export const saveDebtPayment = async (payment) => {
   return mapDebtPayment(data);
 };
 
+export const getUserProfile = async (userId, token) => {
+  if (!isSupabaseConfigured) {
+    return {
+      userId: userId || "local-user",
+      fullName: "Local Manager",
+      role: "manager",
+      stationId: null
+    };
+  }
+
+  const client = createSupabaseForToken(token);
+  const { data, error } = await client
+    .from("user_profiles")
+    .select("*")
+    .eq("user_id", userId)
+    .single();
+  if (error) throw new Error(error.message);
+  return mapUserProfile(data);
+};
+
+export const createDailyShiftReport = async (payload, userId, token) => {
+  if (!isSupabaseConfigured) {
+    throw new Error("Daily shift reports require Supabase.");
+  }
+
+  const client = createSupabaseForToken(token);
+  const { data, error } = await client
+    .from("daily_shift_reports")
+    .insert({
+      station_id: uuid(payload.stationId),
+      report_date: payload.reportDate,
+      shift: payload.shift,
+      status: "pending",
+      submitted_by: userId,
+      pump_prices: payload.pumpPrices || [],
+      meter_lines: payload.meterLines || [],
+      dipping_lines: payload.dippingLines || [],
+      credit_lines: payload.creditLines || [],
+      settlement_lines: payload.settlementLines || [],
+      expense_lines: payload.expenseLines || [],
+      notes: payload.notes || "",
+      totals: payload.totals || {}
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapDailyShiftReport(data);
+};
+
+export const listDailyShiftReports = async ({ status, profile, token }) => {
+  if (!isSupabaseConfigured) return [];
+
+  const client = createSupabaseForToken(token);
+  let query = client
+    .from("daily_shift_reports")
+    .select("*")
+    .order("submitted_at", { ascending: false });
+
+  if (status) query = query.eq("status", status);
+  if (profile?.role === "manager") query = query.eq("station_id", profile.stationId);
+  if (profile?.role === "staff") query = query.eq("submitted_by", profile.userId);
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  return (data || []).map(mapDailyShiftReport);
+};
+
+export const getDailyShiftReport = async (id, token) => {
+  if (!isSupabaseConfigured) throw new Error("Daily shift reports require Supabase.");
+
+  const client = createSupabaseForToken(token);
+  const { data, error } = await client
+    .from("daily_shift_reports")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (error) throw new Error(error.message);
+  return mapDailyShiftReport(data);
+};
+
+export const confirmDailyShiftReport = async (report, userId, postedLedgerIds, token) => {
+  const client = createSupabaseForToken(token);
+  const { data, error } = await client
+    .from("daily_shift_reports")
+    .update({
+      status: "confirmed",
+      confirmed_by: userId,
+      confirmed_at: new Date().toISOString(),
+      posted_ledger_ids: postedLedgerIds,
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", report.id)
+    .eq("status", "pending")
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapDailyShiftReport(data);
+};
+
+export const rejectDailyShiftReport = async (id, userId, reason, token) => {
+  const client = createSupabaseForToken(token);
+  const { data, error } = await client
+    .from("daily_shift_reports")
+    .update({
+      status: "rejected",
+      rejected_by: userId,
+      rejected_at: new Date().toISOString(),
+      rejection_reason: reason || "",
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", id)
+    .eq("status", "pending")
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapDailyShiftReport(data);
+};
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -509,6 +703,11 @@ export const loadState = async () => {
 export const withState = async (handler) => {
   const state = await loadState();
   const changed = new Set();
+  const startLengths = Object.fromEntries(
+    Object.entries(state)
+      .filter(([, value]) => Array.isArray(value))
+      .map(([key, value]) => [key, value.length])
+  );
 
   const proxy = new Proxy(state, {
     get(target, prop) {
@@ -534,15 +733,17 @@ export const withState = async (handler) => {
   const result = await handler(proxy);
 
   const lastOf = (arr) => arr[arr.length - 1];
+  const addedItems = (key) => state[key].slice(startLengths[key] || 0);
 
   if (changed.has("stations")) await saveStation(lastOf(state.stations));
   if (changed.has("lorries")) await saveLorry(lastOf(state.lorries));
   if (changed.has("depotTrips")) await saveDepotTrip(lastOf(state.depotTrips));
 
   if (changed.has("dailyDeposits")) {
-    const newDeposits = state.dailyDeposits.slice(-result.length || -1);
-    for (const d of Array.isArray(result) ? newDeposits : [lastOf(state.dailyDeposits)]) {
-      await saveDeposit(d);
+    const newDeposits = addedItems("dailyDeposits");
+    for (const d of newDeposits.length ? newDeposits : [lastOf(state.dailyDeposits)]) {
+      const saved = await saveDeposit(d);
+      Object.assign(d, saved);
     }
   }
 
@@ -567,21 +768,40 @@ export const withState = async (handler) => {
     await saveCycle(newCycle);
   }
 
-  if (changed.has("internalFuelUses")) await saveInternalUse(lastOf(state.internalFuelUses));
-  if (changed.has("pumpMeterReadings")) await savePumpReading(lastOf(state.pumpMeterReadings));
-  if (changed.has("expenses")) await saveExpense(lastOf(state.expenses));
+  if (changed.has("internalFuelUses")) {
+    for (const entry of addedItems("internalFuelUses")) {
+      Object.assign(entry, await saveInternalUse(entry));
+    }
+  }
+  if (changed.has("pumpMeterReadings")) {
+    for (const reading of addedItems("pumpMeterReadings")) {
+      Object.assign(reading, await savePumpReading(reading));
+    }
+  }
   if (changed.has("debts")) {
-    // issueDebt may push a new debt OR mutate an existing one
-    // We save the last pushed one; mutations are handled via updateDebt in settleDebt path
-    await saveDebt(lastOf(state.debts));
+    // Save newly pushed debts before expenses so debt-backed expense rows can carry the DB id.
+    for (const debt of addedItems("debts")) {
+      Object.assign(debt, await saveDebt(debt));
+    }
+  }
+  if (changed.has("expenses")) {
+    for (const expense of addedItems("expenses")) {
+      Object.assign(expense, await saveExpense(expense));
+    }
+  }
+  if (changed.has("productSales")) {
+    for (const sale of addedItems("productSales")) {
+      Object.assign(sale, await saveProductSale(sale));
+    }
   }
   if (changed.has("debtPayments")) {
     // settleDebt pushes a payment and mutates the debt object
-    const payment = lastOf(state.debtPayments);
-    await saveDebtPayment(payment);
-    // Also update the mutated debt in Supabase
-    const debt = (state.debts || []).find((d) => d.id === payment.debtId);
-    if (debt && uuid(debt.id)) await updateDebt(debt);
+    for (const payment of addedItems("debtPayments")) {
+      Object.assign(payment, await saveDebtPayment(payment));
+      // Also update the mutated debt in Supabase
+      const debt = (state.debts || []).find((d) => d.id === payment.debtId);
+      if (debt && uuid(debt.id)) await updateDebt(debt);
+    }
   }
 
   return result;

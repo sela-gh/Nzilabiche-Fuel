@@ -10,6 +10,7 @@ export const createSeedState = () => ({
   depotTrips: [],
   cycles: [],
   dailyDeposits: [],
+  productSales: [],
   expenses: [],
   debts: [],
   debtPayments: [],

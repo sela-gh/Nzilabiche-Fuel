@@ -20,13 +20,14 @@ import {
   Receipt,
   RefreshCw,
   ShieldCheck,
+  ShoppingBag,
   Settings,
   Sun,
   Truck,
   WalletCards
 } from "lucide-react";
 import "./styles.css";
-import { isSupabaseConfigured } from "./supabaseClient.js";
+import { isSupabaseConfigured, supabase } from "./supabaseClient.js";
 
 const APP_LOCALE = "en-TZ";
 const APP_TIME_ZONE = "Africa/Dar_es_Salaam";
@@ -58,6 +59,16 @@ const EXPENSE_CATEGORIES = [
   "Tax & Levies",
   "Insurance",
   DEBT_EXPENSE_CATEGORY,
+  "Other"
+];
+
+const PRODUCT_SALE_CATEGORIES = [
+  "Engine Oil",
+  "Tyres",
+  "Lubricants",
+  "Accessories",
+  "Car Care",
+  "Shop Item",
   "Other"
 ];
 
@@ -131,9 +142,24 @@ const eatInputToIso = (value) => {
 };
 
 const api = {
+  token: "",
+  setToken(token) {
+    this.token = token || "";
+  },
+  headers() {
+    return this.token ? { Authorization: `Bearer ${this.token}` } : {};
+  },
+  async getMe() {
+    const response = await fetch("/api/me", { headers: this.headers() });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Login required");
+    return body;
+  },
   async getBootstrap() {
-    const response = await fetch("/api/bootstrap");
-    return response.json();
+    const response = await fetch("/api/bootstrap", { headers: this.headers() });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not load data");
+    return body;
   },
   async getDatabaseStatus() {
     const response = await fetch("/api/database-status");
@@ -144,12 +170,20 @@ const api = {
   async post(path, payload) {
     const response = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...this.headers() },
       body: JSON.stringify(payload)
     });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || "Request failed");
     return body;
+  },
+  async getDailyShiftReports(status = "pending") {
+    const response = await fetch(`/api/daily-shift-reports?status=${encodeURIComponent(status)}`, {
+      headers: this.headers()
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not load reports");
+    return body.reports || [];
   }
 };
 
@@ -158,6 +192,7 @@ const navItems = [
   { id: "deposits", label: "Deposits", icon: Banknote },
   { id: "deliveries", label: "Deliveries", icon: Truck },
   { id: "depot", label: "Depot Trips", icon: Factory },
+  { id: "sales", label: "Sales", icon: ShoppingBag },
   { id: "expenses", label: "Expenses", icon: Receipt },
   { id: "variance", label: "Variance", icon: AlertTriangle },
   { id: "reports", label: "Reports", icon: BarChart3 },
@@ -246,6 +281,17 @@ const emptyForms = {
     amount: 0,
     paymentMethod: "cash"
   },
+  productSale: {
+    stationId: "",
+    date: eatDateTimeInput(),
+    shift: "day",
+    itemName: "",
+    category: PRODUCT_SALE_CATEGORIES[0],
+    quantity: 1,
+    unitPrice: 0,
+    paymentMethod: "cash",
+    notes: ""
+  },
   debtIssue: {
     stationId: "",
     date: eatDateTimeInput(),
@@ -261,6 +307,17 @@ const emptyForms = {
     amount: 0,
     paymentMethod: "cash",
     note: ""
+  },
+  dailyReport: {
+    stationId: "",
+    reportDate: eatDateKey(new Date()),
+    shift: "day",
+    meterLines: [],
+    dippingLines: [],
+    creditLines: [{ debtorName: "", description: "", amount: 0, paymentMethod: "cash" }],
+    settlementLines: [{ debtId: "", amount: 0, paymentMethod: "cash", note: "" }],
+    expenseLines: [{ category: EXPENSE_CATEGORIES[0], description: "", amount: 0, paymentMethod: "cash" }],
+    notes: ""
   }
 };
 
@@ -313,20 +370,76 @@ function buildDepositLines(products, stations, stationId, pumpTankLinks = []) {
   return lines;
 }
 
+function buildReportMeterLines(products, stations, stationId, pumpTankLinks = []) {
+  return buildDepositLines(products, stations, stationId, pumpTankLinks).map((line) => ({
+    productId: line.productId,
+    pumpNumber: line.pumpNumber,
+    tankNumber: line.tankNumber,
+    openingReading: 0,
+    closingReading: 0,
+    pumpPrice: 0,
+    paymentMethod: "cash"
+  }));
+}
+
+function buildDippingLines(products, stations, stationId) {
+  const station = stations.find((item) => item.id === stationId);
+  return products.flatMap((product) => {
+    const count = productTankCount(station, product);
+    return Array.from({ length: count }, (_, index) => ({
+      productId: product.id,
+      tankNumber: index + 1,
+      openingDip: 0,
+      closingDip: 0
+    }));
+  });
+}
+
 function App() {
   const [data, setData] = useState(null);
   const [activeView, setActiveView] = useState("dashboard");
+  const [auth, setAuth] = useState({ loading: true, session: null, user: null, profile: null });
   const [forms, setForms] = useState(emptyForms);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [expenses, setExpenses] = useState([]);
   const [debts, setDebts] = useState([]);
+  const [pendingReports, setPendingReports] = useState([]);
+  const [lastSubmittedReport, setLastSubmittedReport] = useState(null);
   const [activeShift, setActiveShift] = useState("day");
   const [databaseStatus, setDatabaseStatus] = useState({
     connected: false,
     configured: isSupabaseConfigured,
     message: "Checking Supabase connection..."
   });
+
+  const hydrateAuth = async (session) => {
+    api.setToken(session?.access_token || "");
+    if (!session && isSupabaseConfigured) {
+      setAuth({ loading: false, session: null, user: null, profile: null });
+      setData(null);
+      return;
+    }
+
+    if (!isSupabaseConfigured) {
+      setAuth({
+        loading: false,
+        session: null,
+        user: { id: "local-user", email: "local@example.test" },
+        profile: { userId: "local-user", fullName: "Local Manager", role: "manager", stationId: null }
+      });
+      return;
+    }
+
+    const me = await api.getMe();
+    setAuth({ loading: false, session, user: me.user, profile: me.profile });
+  };
+
+  const loadPendingReports = async (profile = auth.profile) => {
+    if (profile?.role !== "manager") return;
+    const reports = await api.getDailyShiftReports("pending");
+    setPendingReports(reports);
+  };
 
   const load = async () => {
     setError("");
@@ -381,13 +494,33 @@ function App() {
         ...current.expense,
         stationId: current.expense.stationId || firstStation
       },
+      productSale: {
+        ...current.productSale,
+        stationId: current.productSale.stationId || firstStation
+      },
       debtIssue: {
         ...current.debtIssue,
         stationId: current.debtIssue.stationId || firstStation
+      },
+      dailyReport: {
+        ...current.dailyReport,
+        stationId: current.dailyReport.stationId || firstStation,
+        meterLines: current.dailyReport.meterLines.length
+          ? current.dailyReport.meterLines
+          : buildReportMeterLines(
+              bootstrap.products,
+              bootstrap.stations,
+              current.dailyReport.stationId || firstStation,
+              bootstrap.pumpTankLinks || []
+            ),
+        dippingLines: current.dailyReport.dippingLines.length
+          ? current.dailyReport.dippingLines
+          : buildDippingLines(bootstrap.products, bootstrap.stations, current.dailyReport.stationId || firstStation)
       }
     }));
     setExpenses(bootstrap.expenses || []);
     setDebts(bootstrap.debts || []);
+    await loadPendingReports();
     api
       .getDatabaseStatus()
       .then(setDatabaseStatus)
@@ -397,8 +530,33 @@ function App() {
   };
 
   useEffect(() => {
-    load().catch((err) => setError(err.message));
+    if (!isSupabaseConfigured) {
+      hydrateAuth(null).catch((err) => {
+        setAuth((current) => ({ ...current, loading: false }));
+        setError(err.message);
+      });
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data: sessionData }) => {
+      hydrateAuth(sessionData.session).catch((err) => {
+        setAuth({ loading: false, session: null, user: null, profile: null });
+        setError(err.message);
+      });
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      hydrateAuth(session).catch((err) => setError(err.message));
+    });
+
+    return () => listener.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!auth.loading && auth.profile) {
+      load().catch((err) => setError(err.message));
+    }
+  }, [auth.loading, auth.profile?.userId]);
 
   const reference = useMemo(() => {
     if (!data) return { stations: [], products: [], depotTrips: [], lorries: [], pumpTankLinks: [] };
@@ -503,6 +661,50 @@ function App() {
     }
   };
 
+  const submitProductSale = async () => {
+    setError("");
+    setNotice("");
+    const f = forms.productSale;
+    const itemName = f.itemName.trim();
+    const category = f.category.trim();
+    const quantity = Number(f.quantity);
+    const unitPrice = Number(f.unitPrice);
+
+    if (!f.stationId) { setError("Please select a station."); return; }
+    if (!itemName) { setError("Please enter the item sold."); return; }
+    if (!category) { setError("Please select a category."); return; }
+    if (quantity <= 0) { setError("Quantity must be greater than zero."); return; }
+    if (unitPrice <= 0) { setError("Unit price must be greater than zero."); return; }
+
+    try {
+      await api.post("/api/product-sales", {
+        stationId: f.stationId,
+        date: eatInputToIso(f.date),
+        shift: f.shift,
+        itemName,
+        category,
+        quantity,
+        unitPrice,
+        paymentMethod: f.paymentMethod,
+        notes: f.notes.trim()
+      });
+      setNotice("Product sale recorded.");
+      setForms((current) => ({
+        ...current,
+        productSale: {
+          ...emptyForms.productSale,
+          stationId: f.stationId,
+          date: eatDateTimeInput(),
+          shift: f.shift,
+          paymentMethod: f.paymentMethod
+        }
+      }));
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const submitDebtIssue = async () => {
     setError("");
     setNotice("");
@@ -585,6 +787,153 @@ function App() {
     }
   };
 
+ const signIn = async ({ email, password }) => {
+    setError("");
+    setNotice("");
+    if (!supabase) {
+      setError("Supabase is not configured for login.");
+      return;
+    }
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+    if (signInError) {
+      setError(signInError.message);
+      return;
+    }
+    
+    // REMOVE the await hydrateAuth(signInData.session); line.
+    // The useEffect onAuthStateChange listener will automatically handle it!
+  };
+
+  const signOut = async () => {
+    if (supabase) await supabase.auth.signOut();
+    api.setToken("");
+    setAuth({ loading: false, session: null, user: null, profile: null });
+    setData(null);
+  };
+
+  const updateReportArray = (field, index, key, value) => {
+    setForms((current) => ({
+      ...current,
+      dailyReport: {
+        ...current.dailyReport,
+        [field]: current.dailyReport[field].map((line, i) =>
+          i === index ? { ...line, [key]: value } : line
+        )
+      }
+    }));
+  };
+
+  const addReportArrayLine = (field, line) => {
+    setForms((current) => ({
+      ...current,
+      dailyReport: {
+        ...current.dailyReport,
+        [field]: [...current.dailyReport[field], line]
+      }
+    }));
+  };
+
+  const submitDailyReport = async () => {
+    setError("");
+    setNotice("");
+    const f = forms.dailyReport;
+    try {
+      const result = await api.post("/api/daily-shift-reports", {
+        stationId: f.stationId,
+        reportDate: f.reportDate,
+        shift: f.shift,
+        pumpPrices: f.meterLines.map((line) => ({
+          productId: line.productId,
+          pumpNumber: line.pumpNumber,
+          tankNumber: line.tankNumber,
+          pumpPrice: Number(line.pumpPrice || 0)
+        })),
+        meterLines: f.meterLines.map((line) => ({
+          ...line,
+          openingReading: Number(line.openingReading || 0),
+          closingReading: Number(line.closingReading || 0),
+          pumpPrice: Number(line.pumpPrice || 0)
+        })),
+        dippingLines: f.dippingLines.map((line) => ({
+          ...line,
+          openingDip: Number(line.openingDip || 0),
+          closingDip: Number(line.closingDip || 0)
+        })),
+        creditLines: f.creditLines
+          .filter((line) => line.debtorName.trim() || Number(line.amount || 0) > 0)
+          .map((line) => ({ ...line, amount: Number(line.amount || 0) })),
+        settlementLines: f.settlementLines
+          .filter((line) => line.debtId || Number(line.amount || 0) > 0)
+          .map((line) => ({ ...line, amount: Number(line.amount || 0) })),
+        expenseLines: f.expenseLines
+          .filter((line) => line.description.trim() || Number(line.amount || 0) > 0)
+          .map((line) => ({ ...line, amount: Number(line.amount || 0) })),
+        notes: f.notes.trim()
+      });
+      setLastSubmittedReport(result);
+      setNotice("Daily report submitted for manager review.");
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const resetDailyReport = () => {
+    if (!data) return;
+    const stationId = forms.dailyReport.stationId || data.stations[0]?.id || "";
+    setLastSubmittedReport(null);
+    setForms((current) => ({
+      ...current,
+      dailyReport: {
+        ...emptyForms.dailyReport,
+        stationId,
+        reportDate: eatDateKey(new Date()),
+        shift: current.dailyReport.shift,
+        meterLines: buildReportMeterLines(data.products, data.stations, stationId, data.pumpTankLinks || []),
+        dippingLines: buildDippingLines(data.products, data.stations, stationId)
+      }
+    }));
+  };
+
+  const confirmReport = async (reportId) => {
+    setError("");
+    setNotice("");
+    try {
+      await api.post(`/api/daily-shift-reports/${reportId}/confirm`, {});
+      setNotice("Report confirmed and posted to ledgers.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const rejectReport = async (reportId) => {
+    setError("");
+    setNotice("");
+    try {
+      await api.post(`/api/daily-shift-reports/${reportId}/reject`, { reason: "Rejected by manager" });
+      setNotice("Report rejected.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  if (auth.loading) {
+    return (
+      <main className="loading-shell">
+        <RefreshCw className="spin" size={32} />
+        <p>Checking login...</p>
+      </main>
+    );
+  }
+
+  if (isSupabaseConfigured && !auth.profile) {
+    return <LoginScreen error={error} onSignIn={signIn} />;
+  }
+
   if (!data) {
     return (
       <main className="loading-shell">
@@ -596,21 +945,48 @@ function App() {
 
   const activeProps = {
     data,
+    auth,
     reference,
     forms,
     updateForm,
     updateDepositLine,
+    updateReportArray,
+    addReportArrayLine,
     submit,
     submitPumpTankLink,
     submitExpense,
+    submitProductSale,
     submitDebtIssue,
     submitDebtSettlement,
     expenses,
     debts,
     databaseStatus,
     activeShift,
-    setActiveShift
+    setActiveShift,
+    pendingReports,
+    submitDailyReport,
+    resetDailyReport,
+    confirmReport,
+    rejectReport,
+    lastSubmittedReport,
+    signOut
   };
+
+  if (auth.profile?.role === "staff") {
+    return (
+      <StaffReportShell
+        {...activeProps}
+        notice={notice}
+        error={error}
+        setForms={setForms}
+      />
+    );
+  }
+
+  const managerNavItems = [
+    navItems.find((item) => item.id === "dashboard"),
+    { id: "pendingReports", label: "Pending Reports", icon: ClipboardList }
+  ].filter(Boolean);
 
   return (
     <div className={`app-shell${activeShift === "night" ? " night-mode" : ""}`}>
@@ -625,7 +1001,7 @@ function App() {
           </div>
         </div>
         <nav className="nav-list" aria-label="Main navigation">
-          {navItems.map((item) => {
+          {managerNavItems.map((item) => {
             const Icon = item.icon;
             return (
               <button
@@ -654,7 +1030,7 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">Cycle-based reconciliation</p>
-            <h1>{navItems.find((item) => item.id === activeView)?.label}</h1>
+            <h1>{managerNavItems.find((item) => item.id === activeView)?.label || "Dashboard"}</h1>
           </div>
           <div className="topbar-right">
             <div className="global-shift-switcher">
@@ -668,6 +1044,7 @@ function App() {
                     setForms(current => ({
                       ...current,
                       deposit: { ...current.deposit, shift: value },
+                      productSale: { ...current.productSale, shift: value },
                       expense: { ...current.expense, shift: value },
                       debtIssue: { ...current.debtIssue, shift: value },
                       internal: { ...current.internal, shift: value },
@@ -683,6 +1060,9 @@ function App() {
             <button className="icon-button" onClick={load} type="button" aria-label="Refresh data">
               <RefreshCw size={18} />
             </button>
+            <button className="icon-button" onClick={signOut} type="button" aria-label="Sign out">
+              <ShieldCheck size={18} />
+            </button>
           </div>
         </header>
         {activeShift === "night" && (
@@ -696,15 +1076,267 @@ function App() {
         {error && <div className="notice error">{error}</div>}
 
         {activeView === "dashboard" && <Dashboard {...activeProps} />}
-        {activeView === "deposits" && <Deposits {...activeProps} setForms={setForms} />}
-        {activeView === "deliveries" && <Deliveries {...activeProps} setError={setError} setNotice={setNotice} load={load} />}
-        {activeView === "depot" && <DepotTrips {...activeProps} />}
-        {activeView === "expenses" && <Expenses {...activeProps} />}
-        {activeView === "variance" && <Variance {...activeProps} />}
-        {activeView === "reports" && <Reports {...activeProps} />}
-        {activeView === "setup" && <Setup {...activeProps} />}
+        {activeView === "pendingReports" && <ManagerPendingReports {...activeProps} />}
       </main>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Authenticated role surfaces
+// ---------------------------------------------------------------------------
+function LoginScreen({ error, onSignIn }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleLogin = async () => {
+    setIsSubmitting(true);
+    await onSignIn({ email, password });
+    setIsSubmitting(false);
+  };
+
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel">
+        <div className="brand-block auth-brand">
+          <div className="brand-mark">
+            <Droplets size={26} />
+          </div>
+          <div>
+            <strong>Nzilabiche Fuel</strong>
+            <span>Secure station access</span>
+          </div>
+        </div>
+        {error && <div className="notice error">{error}</div>}
+        <FormGrid>
+          <InputField label="Email" type="email" value={email} onChange={setEmail} />
+          <InputField label="Password" type="password" value={password} onChange={setPassword} />
+        </FormGrid>
+        <ActionButton onClick={handleLogin} disabled={isSubmitting}>
+          {isSubmitting ? <RefreshCw className="spin" size={18} /> : <ShieldCheck size={18} />}
+          {isSubmitting ? "Signing in..." : "Sign in"}
+        </ActionButton>
+      </section>
+    </main>
+  );
+}
+
+function StaffReportShell({
+  data,
+  auth,
+  forms,
+  updateForm,
+  updateReportArray,
+  addReportArrayLine,
+  submitDailyReport,
+  resetDailyReport,
+  lastSubmittedReport,
+  notice,
+  error,
+  signOut,
+  setForms
+}) {
+  const report = forms.dailyReport;
+  const stationOptions = data.stations.map((station) => ({ value: station.id, label: station.name }));
+  const productOptions = data.products.map((product) => ({ value: product.id, label: product.name }));
+  const debtOptions = (data.debts || [])
+    .filter((debt) => debt.status === "open")
+    .map((debt) => ({
+      value: debt.id,
+      label: `${debt.debtorName} - ${money(debt.outstandingAmount)}`
+    }));
+
+  const handleStationChange = (stationId) => {
+    setForms((current) => ({
+      ...current,
+      dailyReport: {
+        ...current.dailyReport,
+        stationId,
+        meterLines: buildReportMeterLines(data.products, data.stations, stationId, data.pumpTankLinks || []),
+        dippingLines: buildDippingLines(data.products, data.stations, stationId)
+      }
+    }));
+  };
+
+  if (lastSubmittedReport) {
+    return (
+      <main className="staff-shell">
+        <section className="success-screen">
+          <ShieldCheck size={42} />
+          <p className="eyebrow">Pending manager confirmation</p>
+          <h1>Report submitted</h1>
+          <p>
+            {stationName(data, lastSubmittedReport.stationId)} {shiftBadge(lastSubmittedReport.shift)} for{" "}
+            {lastSubmittedReport.reportDate}
+          </p>
+          <div className="success-actions">
+            <ActionButton onClick={() => window.print()}>
+              <Receipt size={18} />
+              Print
+            </ActionButton>
+            <ActionButton onClick={() => navigator.share?.({ title: "Daily shift report", text: lastSubmittedReport.id })}>
+              <Phone size={18} />
+              Share
+            </ActionButton>
+            <ActionButton onClick={resetDailyReport}>
+              <Plus size={18} />
+              New report
+            </ActionButton>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="staff-shell">
+      <header className="staff-topbar">
+        <div>
+          <p className="eyebrow">Daily shift report</p>
+          <h1>Nzilabiche Fuel</h1>
+          <span>{auth.profile?.fullName || auth.user?.email}</span>
+        </div>
+        <button className="icon-button" onClick={signOut} type="button" aria-label="Sign out">
+          <ShieldCheck size={18} />
+        </button>
+      </header>
+
+      {notice && <div className="notice success">{notice}</div>}
+      {error && <div className="notice error">{error}</div>}
+
+      <section className="view-grid">
+        <EntryPanel title="Shift details" description="Choose the station, business date, and shift for this report." icon={ClipboardList}>
+          <FormGrid>
+            <SelectField label="Station" value={report.stationId} onChange={handleStationChange} options={stationOptions} />
+            <InputField label="Date" type="date" value={report.reportDate} onChange={(v) => updateForm("dailyReport", "reportDate", v)} />
+            <SelectField label="Shift" value={report.shift} onChange={(v) => updateForm("dailyReport", "shift", v)} options={SHIFTS.map((shift) => ({ value: shift.value, label: shift.label }))} />
+          </FormGrid>
+        </EntryPanel>
+
+        <EntryPanel title="Pump prices and meter readings" description="Meter differences create fuel revenue only after manager confirmation." icon={Gauge}>
+          <div className="report-line-grid">
+            {report.meterLines.map((line, index) => (
+              <div className="report-line" key={`${line.productId}-${line.pumpNumber}-${index}`}>
+                <SelectField label="Product" value={line.productId} onChange={(v) => updateReportArray("meterLines", index, "productId", v)} options={productOptions} />
+                <InputField label="Pump" type="number" value={line.pumpNumber} onChange={(v) => updateReportArray("meterLines", index, "pumpNumber", v)} />
+                <InputField label="Opening meter" type="number" value={line.openingReading} onChange={(v) => updateReportArray("meterLines", index, "openingReading", v)} />
+                <InputField label="Closing meter" type="number" value={line.closingReading} onChange={(v) => updateReportArray("meterLines", index, "closingReading", v)} />
+                <InputField label="Pump price" type="number" value={line.pumpPrice} onChange={(v) => updateReportArray("meterLines", index, "pumpPrice", v)} />
+              </div>
+            ))}
+          </div>
+        </EntryPanel>
+
+        <EntryPanel title="Dipping report" description="Capture tank opening and closing dips for review." icon={Droplets}>
+          <div className="report-line-grid">
+            {report.dippingLines.map((line, index) => (
+              <div className="report-line compact" key={`${line.productId}-${line.tankNumber}-${index}`}>
+                <SelectField label="Product" value={line.productId} onChange={(v) => updateReportArray("dippingLines", index, "productId", v)} options={productOptions} />
+                <InputField label="Tank" type="number" value={line.tankNumber} onChange={(v) => updateReportArray("dippingLines", index, "tankNumber", v)} />
+                <InputField label="Opening dip" type="number" value={line.openingDip} onChange={(v) => updateReportArray("dippingLines", index, "openingDip", v)} />
+                <InputField label="Closing dip" type="number" value={line.closingDip} onChange={(v) => updateReportArray("dippingLines", index, "closingDip", v)} />
+              </div>
+            ))}
+          </div>
+        </EntryPanel>
+
+        <section className="section-band two-column">
+          <ReportLines
+            title="Credits issued"
+            icon={CreditCard}
+            lines={report.creditLines}
+            addLine={() => addReportArrayLine("creditLines", { debtorName: "", description: "", amount: 0, paymentMethod: "cash" })}
+            render={(line, index) => (
+              <>
+                <InputField label="Customer" value={line.debtorName} onChange={(v) => updateReportArray("creditLines", index, "debtorName", v)} />
+                <InputField label="Description" value={line.description} onChange={(v) => updateReportArray("creditLines", index, "description", v)} />
+                <InputField label="Amount" type="number" value={line.amount} onChange={(v) => updateReportArray("creditLines", index, "amount", v)} />
+              </>
+            )}
+          />
+          <ReportLines
+            title="Credits settled"
+            icon={WalletCards}
+            lines={report.settlementLines}
+            addLine={() => addReportArrayLine("settlementLines", { debtId: "", amount: 0, paymentMethod: "cash", note: "" })}
+            render={(line, index) => (
+              <>
+                <SelectField label="Debt" value={line.debtId} onChange={(v) => updateReportArray("settlementLines", index, "debtId", v)} options={[{ value: "", label: "Select debt" }, ...debtOptions]} />
+                <InputField label="Amount" type="number" value={line.amount} onChange={(v) => updateReportArray("settlementLines", index, "amount", v)} />
+                <InputField label="Note" value={line.note} onChange={(v) => updateReportArray("settlementLines", index, "note", v)} />
+              </>
+            )}
+          />
+        </section>
+
+        <ReportLines
+          title="Expenses"
+          icon={Receipt}
+          lines={report.expenseLines}
+          addLine={() => addReportArrayLine("expenseLines", { category: EXPENSE_CATEGORIES[0], description: "", amount: 0, paymentMethod: "cash" })}
+          render={(line, index) => (
+            <>
+              <SelectField label="Category" value={line.category} onChange={(v) => updateReportArray("expenseLines", index, "category", v)} options={EXPENSE_CATEGORIES.map((item) => ({ value: item, label: item }))} />
+              <InputField label="Description" value={line.description} onChange={(v) => updateReportArray("expenseLines", index, "description", v)} />
+              <InputField label="Amount" type="number" value={line.amount} onChange={(v) => updateReportArray("expenseLines", index, "amount", v)} />
+            </>
+          )}
+        />
+
+        <EntryPanel title="Notes" description="Optional handover or reconciliation notes for the manager." icon={ClipboardList}>
+          <label className="field">
+            <span>Notes</span>
+            <textarea value={report.notes} onChange={(event) => updateForm("dailyReport", "notes", event.target.value)} />
+          </label>
+          <ActionButton onClick={submitDailyReport}>
+            <Plus size={18} />
+            Submit pending report
+          </ActionButton>
+        </EntryPanel>
+      </section>
+    </main>
+  );
+}
+
+function ReportLines({ title, icon: Icon, lines, render, addLine }) {
+  return (
+    <EntryPanel title={title} description="Rows left blank are ignored when the report is submitted." icon={Icon}>
+      <div className="report-line-grid">
+        {lines.map((line, index) => (
+          <div className="report-line" key={index}>
+            {render(line, index)}
+          </div>
+        ))}
+      </div>
+      <ActionButton onClick={addLine}>
+        <Plus size={18} />
+        Add row
+      </ActionButton>
+    </EntryPanel>
+  );
+}
+
+function ManagerPendingReports({ data, pendingReports, confirmReport, rejectReport }) {
+  return (
+    <section className="view-grid">
+      <DataTable
+        title="Pending daily shift reports"
+        columns={["Station", "Date", "Shift", "Fuel revenue", "Expenses", "Credits", "Actions"]}
+        rows={pendingReports.map((report) => [
+          stationName(data, report.stationId),
+          report.reportDate,
+          shiftBadge(report.shift),
+          money(report.totals?.fuelRevenue),
+          money(report.totals?.expenses),
+          money(report.totals?.creditsIssued),
+          <span className="table-actions">
+            <button type="button" onClick={() => confirmReport(report.id)}>Confirm</button>
+            <button type="button" onClick={() => rejectReport(report.id)}>Reject</button>
+          </span>
+        ])}
+      />
+    </section>
   );
 }
 
@@ -717,17 +1349,21 @@ function Dashboard({ data, expenses }) {
 
   const totalExpenses =
     financialSummary.totalExpenses ?? expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
-  const netProfit = financialSummary.netProfit ?? totals.grossProfit - totalExpenses;
+  const productSalesIncome = financialSummary.productSalesIncome ?? 0;
+  const totalIncomeGenerated =
+    financialSummary.totalIncomeGenerated ?? totals.cashCollected + productSalesIncome;
+  const netResult =
+    financialSummary.netResult ?? totalIncomeGenerated - (financialSummary.fuelPurchaseCost || 0) - totalExpenses;
 
   return (
     <section className="view-grid">
       <div className="metric-grid">
-        <Metric icon={WalletCards} label="Cash collected" value={money(totals.cashCollected)} />
+        <Metric icon={WalletCards} label="Fuel income" value={money(financialSummary.fuelIncome ?? totals.cashCollected)} />
+        <Metric icon={ShoppingBag} label="Product sales" value={money(productSalesIncome)} />
+        <Metric icon={Banknote} label="Total income" value={money(totalIncomeGenerated)} />
         <Metric icon={Gauge} label="Fuel sold" value={liters(totals.fuelSold)} />
-        <Metric icon={Droplets} label="Expected stock" value={liters(totals.expectedStock)} />
-        <Metric icon={BarChart3} label="Gross profit" value={money(totals.grossProfit)} />
         <Metric icon={Receipt} label="Expenses + open debt" value={money(totalExpenses)} />
-        <Metric icon={BarChart3} label="Net profit / loss" value={money(netProfit)} highlight={netProfit < 0 ? "loss" : "profit"} />
+        <Metric icon={BarChart3} label="Net result" value={money(netResult)} highlight={netResult < 0 ? "loss" : "profit"} />
       </div>
 
       <section className="section-band">
@@ -1455,6 +2091,213 @@ money(debt.settledAmount),
 }
 
 // ---------------------------------------------------------------------------
+// Sales
+// ---------------------------------------------------------------------------
+function Sales({ data, reference, forms, updateForm, submitProductSale }) {
+  const [filterStation, setFilterStation] = useState("");
+  const [filterShift, setFilterShift] = useState("");
+  const [filterDate, setFilterDate] = useState("");
+  const productSales = data.productSales || [];
+
+  const filtered = productSales.filter((sale) => {
+    if (filterStation && sale.stationId !== filterStation) return false;
+    if (filterShift && sale.shift !== filterShift) return false;
+    if (filterDate && eatDateKey(sale.date) !== filterDate) return false;
+    return true;
+  });
+
+  const totalSales = productSales.reduce((sum, sale) => sum + Number(sale.totalAmount || 0), 0);
+  const filteredTotal = filtered.reduce((sum, sale) => sum + Number(sale.totalAmount || 0), 0);
+  const dayTotal = productSales
+    .filter((sale) => (sale.shift || "day") === "day")
+    .reduce((sum, sale) => sum + Number(sale.totalAmount || 0), 0);
+  const nightTotal = productSales
+    .filter((sale) => sale.shift === "night")
+    .reduce((sum, sale) => sum + Number(sale.totalAmount || 0), 0);
+  const categoryTotals = PRODUCT_SALE_CATEGORIES.map((category) => ({
+    category,
+    amount: productSales
+      .filter((sale) => sale.category === category)
+      .reduce((sum, sale) => sum + Number(sale.totalAmount || 0), 0)
+  })).filter((row) => row.amount > 0);
+  const saleTotal = Number(forms.productSale.quantity || 0) * Number(forms.productSale.unitPrice || 0);
+
+  return (
+    <section className="view-grid">
+      <div className="metric-grid">
+        <Metric icon={ShoppingBag} label="Product sales income" value={money(totalSales)} />
+        <Metric icon={Sun} label="Day shift sales" value={money(dayTotal)} />
+        <Metric icon={Moon} label="Night shift sales" value={money(nightTotal)} />
+        <Metric icon={Receipt} label="Sales records" value={productSales.length} />
+      </div>
+
+      <section className="section-band two-column">
+        <EntryPanel
+          title="Record product sale"
+          description="Log oil, tyres, lubricants, accessories, and other non-fuel sales."
+          icon={ShoppingBag}
+        >
+          <FormGrid>
+            <SelectField
+              label="Station"
+              value={forms.productSale.stationId}
+              onChange={(v) => updateForm("productSale", "stationId", v)}
+              options={reference.stations.map((i) => ({ value: i.id, label: i.name }))}
+            />
+            <InputField
+              label="Date"
+              type="datetime-local"
+              value={forms.productSale.date}
+              onChange={(v) => updateForm("productSale", "date", v)}
+            />
+            <InputField
+              label="Item"
+              value={forms.productSale.itemName}
+              onChange={(v) => updateForm("productSale", "itemName", v)}
+            />
+            <SelectField
+              label="Category"
+              value={forms.productSale.category}
+              onChange={(v) => updateForm("productSale", "category", v)}
+              options={PRODUCT_SALE_CATEGORIES.map((category) => ({ value: category, label: category }))}
+            />
+            <InputField
+              label="Quantity"
+              type="number"
+              value={forms.productSale.quantity}
+              onChange={(v) => updateForm("productSale", "quantity", v)}
+            />
+            <InputField
+              label="Unit price (TZS)"
+              type="number"
+              value={forms.productSale.unitPrice}
+              onChange={(v) => updateForm("productSale", "unitPrice", v)}
+            />
+            <InputField
+              label="Notes"
+              value={forms.productSale.notes}
+              onChange={(v) => updateForm("productSale", "notes", v)}
+            />
+          </FormGrid>
+
+          <div className="debt-balance-strip">
+            <span>Sale total</span>
+            <strong>{money(saleTotal)}</strong>
+          </div>
+
+          <div className="shift-payment-row">
+            <div className="toggle-group">
+              <span className="toggle-label">Shift</span>
+              <div className="toggle-buttons">
+                {SHIFTS.map(({ value, label, icon: Icon }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`toggle-btn${forms.productSale.shift === value ? " active" : ""}`}
+                    onClick={() => updateForm("productSale", "shift", value)}
+                  >
+                    <Icon size={15} />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="toggle-group">
+              <span className="toggle-label">Paid via</span>
+              <div className="toggle-buttons">
+                {PAYMENT_METHODS.map(({ value, label }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`toggle-btn${forms.productSale.paymentMethod === value ? " active" : ""}`}
+                    onClick={() => updateForm("productSale", "paymentMethod", value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <ActionButton onClick={submitProductSale}>
+            <Plus size={18} />
+            Record sale
+          </ActionButton>
+        </EntryPanel>
+
+        <section className="entry-panel">
+          <div className="section-heading">
+            <div className="heading-with-icon">
+              <BarChart3 size={20} />
+              <h2>Sales by category</h2>
+            </div>
+            <p>Running totals for non-fuel items only.</p>
+          </div>
+          {categoryTotals.length ? (
+            <div className="expense-category-list">
+              {categoryTotals.sort((a, b) => b.amount - a.amount).map((row) => (
+                <div key={row.category} className="expense-category-row">
+                  <span>{row.category}</span>
+                  <strong>{money(row.amount)}</strong>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="field-note">No product sales recorded yet.</p>
+          )}
+        </section>
+      </section>
+
+      <section className="entry-panel">
+        <div className="section-heading">
+          <h2>Product sales log</h2>
+          <p>Filter non-fuel sales by station, shift, or day.</p>
+        </div>
+        <div className="expense-filter-row">
+          <SelectField
+            label="Filter by station"
+            value={filterStation}
+            onChange={setFilterStation}
+            options={[{ value: "", label: "All stations" }, ...reference.stations.map((i) => ({ value: i.id, label: i.name }))]}
+          />
+          <SelectField
+            label="Filter by shift"
+            value={filterShift}
+            onChange={setFilterShift}
+            options={[{ value: "", label: "All shifts" }, ...SHIFTS.map((s) => ({ value: s.value, label: s.label }))]}
+          />
+          <InputField
+            label="Filter by day"
+            type="date"
+            value={filterDate}
+            onChange={setFilterDate}
+          />
+          <div className="expense-filter-total">
+            <span>Showing sales total</span>
+            <strong>{money(filteredTotal)}</strong>
+          </div>
+        </div>
+      </section>
+
+      <DataTable
+        columns={["Station", "Date", "Shift", "Item", "Category", "Qty", "Unit price", "Payment", "Total"]}
+        rows={filtered.map((sale) => [
+          stationName(data, sale.stationId),
+          shortDate(sale.date),
+          shiftBadge(sale.shift),
+          sale.itemName,
+          sale.category,
+          sale.quantity,
+          money(sale.unitPrice),
+          paymentBadge(sale.paymentMethod),
+          money(sale.totalAmount)
+        ])}
+      />
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Product settlement lines
 // ---------------------------------------------------------------------------
 function ProductSettlementLines({ data, forms, updateDepositLine }) {
@@ -1729,45 +2572,63 @@ function Variance({ data, reference, forms, updateForm, submit }) {
 function Reports({ data, reference, forms, updateForm, submit, expenses }) {
   const financialSummary = data.dashboard.financialSummary || {};
   const closedCycles = data.cycles.filter((cycle) => cycle.status === "closed");
-  const revenue = closedCycles.reduce((sum, cycle) => sum + Number(cycle.revenue || 0), 0);
+  const allDeposits = data.dailyDeposits || [];
+  const productSales = data.productSales || [];
+  const fuelIncome = financialSummary.fuelIncome ??
+    allDeposits.reduce((sum, deposit) => sum + Number(deposit.cashDeposited || 0), 0);
+  const productSalesIncome = financialSummary.productSalesIncome ??
+    productSales.reduce((sum, sale) => sum + Number(sale.totalAmount || 0), 0);
+  const totalIncomeGenerated = financialSummary.totalIncomeGenerated ?? fuelIncome + productSalesIncome;
+  const fuelPurchaseCost = financialSummary.fuelPurchaseCost ??
+    data.depotTrips.reduce((sum, trip) => sum + Number(trip.totalPurchaseCost || 0), 0);
   const cogs = closedCycles.reduce((sum, cycle) => sum + Number(cycle.estimatedCogs || 0), 0);
   const grossProfit =
     financialSummary.totalGrossProfit ??
     closedCycles.reduce((sum, cycle) => sum + Number(cycle.grossProfit || 0), 0);
   const totalExpenses =
     financialSummary.totalExpenses ?? expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
-  const netProfit = financialSummary.netProfit ?? grossProfit - totalExpenses;
+  const netResult = financialSummary.netResult ?? totalIncomeGenerated - fuelPurchaseCost - totalExpenses;
 
-  // Shift P&L using live deposits
-  const allDeposits = data.dailyDeposits || [];
   const shiftRevenue = (shift) => allDeposits
     .filter((d) => (d.shift || "day") === shift)
     .reduce((s, d) => s + Number(d.cashDeposited || 0), 0);
+  const shiftProductSales = (shift) => productSales
+    .filter((sale) => (sale.shift || "day") === shift)
+    .reduce((s, sale) => s + Number(sale.totalAmount || 0), 0);
   const shiftExpenses = (shift) => expenses
     .filter((e) => e.shift === shift)
     .reduce((s, e) => s + e.amount, 0);
 
-  const dayRev = shiftRevenue("day");
-  const nightRev = shiftRevenue("night");
+  const dayRev = shiftRevenue("day") + shiftProductSales("day");
+  const nightRev = shiftRevenue("night") + shiftProductSales("night");
   const dayExp = shiftExpenses("day");
   const nightExp = shiftExpenses("night");
 
   // Per-station P&L
   const stationSummary = (data.stations || []).map((station) => {
-    const stRev = allDeposits.filter((d) => d.stationId === station.id).reduce((s, d) => s + Number(d.cashDeposited || 0), 0);
+    const stFuelRev = allDeposits.filter((d) => d.stationId === station.id).reduce((s, d) => s + Number(d.cashDeposited || 0), 0);
+    const stProductRev = productSales.filter((sale) => sale.stationId === station.id).reduce((s, sale) => s + Number(sale.totalAmount || 0), 0);
     const stExp = expenses.filter((e) => e.stationId === station.id).reduce((s, e) => s + e.amount, 0);
-    return { name: station.name, revenue: stRev, expenses: stExp, net: stRev - stExp };
+    const stTotalIncome = stFuelRev + stProductRev;
+    return { name: station.name, fuelIncome: stFuelRev, productIncome: stProductRev, income: stTotalIncome, expenses: stExp };
   });
 
   return (
     <section className="view-grid">
       {/* Top metrics */}
       <div className="metric-grid">
-        <Metric icon={WalletCards} label="Closed revenue" value={money(revenue)} />
-        <Metric icon={Factory} label="Estimated COGS" value={money(cogs)} />
-        <Metric icon={BarChart3} label="Gross profit" value={money(grossProfit)} />
+        <Metric icon={WalletCards} label="Fuel income" value={money(fuelIncome)} />
+        <Metric icon={ShoppingBag} label="Product sales income" value={money(productSalesIncome)} />
+        <Metric icon={Banknote} label="Total income generated" value={money(totalIncomeGenerated)} />
+        <Metric icon={Factory} label="Fuel purchase cost" value={money(fuelPurchaseCost)} />
         <Metric icon={Receipt} label="Expenses + open debt" value={money(totalExpenses)} />
-        <Metric icon={BarChart3} label="Net profit / loss" value={money(netProfit)} highlight={netProfit < 0 ? "loss" : "profit"} />
+        <Metric icon={BarChart3} label="Net result" value={money(netResult)} highlight={netResult < 0 ? "loss" : "profit"} />
+      </div>
+
+      <div className="metric-grid">
+        <Metric icon={WalletCards} label="Closed-cycle fuel revenue" value={money(closedCycles.reduce((sum, cycle) => sum + Number(cycle.revenue || 0), 0))} />
+        <Metric icon={Factory} label="Estimated cycle COGS" value={money(cogs)} />
+        <Metric icon={BarChart3} label="Fuel gross profit" value={money(grossProfit)} />
         <Metric icon={AlertTriangle} label="Variance cycles" value={closedCycles.length} />
       </div>
 
@@ -1799,13 +2660,30 @@ function Reports({ data, reference, forms, updateForm, submit, expenses }) {
 
       {/* Per-station summary */}
       <DataTable
-        title="Net profit by station"
-        columns={["Station", "Revenue", "Expenses", "Net profit / loss"]}
+        title="Net result by station"
+        columns={["Station", "Fuel income", "Product income", "Total income", "Expenses", "Net before shared fuel cost"]}
         rows={stationSummary.map((s) => [
           s.name,
-          money(s.revenue),
+          money(s.fuelIncome),
+          money(s.productIncome),
+          money(s.income),
           money(s.expenses),
-          money(s.net)
+          money(s.income - s.expenses)
+        ])}
+      />
+
+      <DataTable
+        title="Product sales by item"
+        columns={["Station", "Date", "Shift", "Item", "Category", "Qty", "Payment", "Total"]}
+        rows={[...productSales].reverse().map((sale) => [
+          stationName(data, sale.stationId),
+          shortDate(sale.date),
+          shiftBadge(sale.shift),
+          sale.itemName,
+          sale.category,
+          sale.quantity,
+          paymentBadge(sale.paymentMethod),
+          money(sale.totalAmount)
         ])}
       />
 

@@ -17,6 +17,19 @@ export const supabase = isSupabaseConfigured
     })
   : null;
 
+export const createSupabaseForToken = (token) =>
+  isSupabaseConfigured
+    ? createClient(supabaseUrl, supabaseAnonKey, {
+        global: {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        },
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      })
+    : null;
+
 export const getSupabaseStatus = async () => {
   if (!isSupabaseConfigured) {
     return {
