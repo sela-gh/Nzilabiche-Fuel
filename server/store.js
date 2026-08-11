@@ -188,6 +188,26 @@ const mapUserProfile = (row) => ({
   stationId: row.station_id || null
 });
 
+const mapFuelDelivery = (row) => ({
+  id: row.id,
+  stationId: row.station_id,
+  lorryId: row.lorry_id,
+  deliveredAt: row.delivery_date,
+  status: row.status,
+  submittedBy: row.submitted_by,
+  submittedAt: row.submitted_at,
+  confirmedBy: row.confirmed_by,
+  confirmedAt: row.confirmed_at,
+  rejectedBy: row.rejected_by,
+  rejectedAt: row.rejected_at,
+  rejectionReason: row.rejection_reason || "",
+  pumpLines: row.pump_lines || [],
+  notes: row.notes || "",
+  postedLedgerIds: row.posted_ledger_ids || {},
+  createdAt: row.created_at,
+  updatedAt: row.updated_at
+});
+
 const mapDailyShiftReport = (row) => ({
   id: row.id,
   stationId: row.station_id,
@@ -686,6 +706,102 @@ export const rejectDailyShiftReport = async (id, userId, reason, token) => {
     .single();
   if (error) throw new Error(error.message);
   return mapDailyShiftReport(data);
+};
+
+export const createFuelDeliveryOffload = async (payload, userId, token) => {
+  if (!isSupabaseConfigured) {
+    throw new Error("Offloading reports require Supabase.");
+  }
+
+  const pumpLines = payload.pumpLines || [];
+  const totalLiters = pumpLines.reduce((sum, line) => sum + Number(line.litersDelivered || 0), 0);
+
+  const client = createSupabaseForToken(token);
+  const { data, error } = await client
+    .from("fuel_deliveries")
+    .insert({
+      station_id: uuid(payload.stationId),
+      lorry_id: uuid(payload.lorryId),
+      delivery_date: payload.deliveredAt,
+      status: "pending",
+      submitted_by: userId,
+      pump_lines: pumpLines,
+      liters_delivered: totalLiters || null,
+      notes: payload.notes || ""
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapFuelDelivery(data);
+};
+
+export const listFuelDeliveryOffloads = async ({ status, profile, token }) => {
+  if (!isSupabaseConfigured) return [];
+
+  const client = createSupabaseForToken(token);
+  let query = client
+    .from("fuel_deliveries")
+    .select("*")
+    .order("submitted_at", { ascending: false });
+
+  if (status) query = query.eq("status", status);
+  if (profile?.role === "manager") query = query.eq("station_id", profile.stationId);
+  if (profile?.role === "staff") query = query.eq("submitted_by", profile.userId);
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  return (data || []).map(mapFuelDelivery);
+};
+
+export const getFuelDeliveryOffload = async (id, token) => {
+  if (!isSupabaseConfigured) throw new Error("Offloading reports require Supabase.");
+
+  const client = createSupabaseForToken(token);
+  const { data, error } = await client
+    .from("fuel_deliveries")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (error) throw new Error(error.message);
+  return mapFuelDelivery(data);
+};
+
+export const confirmFuelDeliveryOffload = async (report, userId, postedLedgerIds, token) => {
+  const client = createSupabaseForToken(token);
+  const { data, error } = await client
+    .from("fuel_deliveries")
+    .update({
+      status: "confirmed",
+      confirmed_by: userId,
+      confirmed_at: new Date().toISOString(),
+      posted_ledger_ids: postedLedgerIds,
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", report.id)
+    .eq("status", "pending")
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapFuelDelivery(data);
+};
+
+export const rejectFuelDeliveryOffload = async (id, userId, reason, token) => {
+  const client = createSupabaseForToken(token);
+  const { data, error } = await client
+    .from("fuel_deliveries")
+    .update({
+      status: "rejected",
+      rejected_by: userId,
+      rejected_at: new Date().toISOString(),
+      rejection_reason: reason || "",
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", id)
+    .eq("status", "pending")
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return mapFuelDelivery(data);
 };
 
 // ---------------------------------------------------------------------------

@@ -29,7 +29,12 @@ import {
   rejectDailyShiftReport,
   withState,
   updateDebt,
-  savePumpTankLink
+  savePumpTankLink,
+  confirmFuelDeliveryOffload,
+  createFuelDeliveryOffload,
+  getFuelDeliveryOffload,
+  listFuelDeliveryOffloads,
+  rejectFuelDeliveryOffload
 } from "./store.js";
 import { getSupabaseStatus, isSupabaseConfigured, supabase } from "./supabase.js";
 
@@ -146,6 +151,63 @@ const normalizeReportPayload = (payload) => {
     expenseLines: asArray(payload.expenseLines),
     notes: payload.notes || "",
     totals
+  };
+};
+
+const normalizeOffloadPayload = (payload) => {
+  if (!payload.stationId || !payload.deliveredAt) {
+    throw new Error("Station and delivery date/time are required.");
+  }
+
+  const asArray = (value) => (Array.isArray(value) ? value : []);
+  const pumpLines = asArray(payload.pumpLines).filter(
+    (line) => line.productId && Number(line.litersDelivered) > 0
+  );
+
+  if (!pumpLines.length) {
+    throw new Error("Add at least one pump/tank line with liters offloaded.");
+  }
+
+  return {
+    stationId: payload.stationId,
+    lorryId: payload.lorryId || null,
+    deliveredAt: payload.deliveredAt,
+    pumpLines: pumpLines.map((line) => ({
+      pumpNumber: Number(line.pumpNumber || 1),
+      tankNumber: Number(line.tankNumber || line.pumpNumber || 1),
+      productId: line.productId,
+      depotTripId: line.depotTripId,
+      litersDelivered: Number(line.litersDelivered || 0),
+      preDeliveryDipstickLiters: Number(line.preDeliveryDipstickLiters || 0)
+    })),
+    notes: payload.notes || ""
+  };
+};
+
+// Posts a confirmed offloading report into the real delivery ledger
+// (delivery_cycles), reusing the same recordDelivery logic the granular
+// /api/deliveries endpoint uses. Mirrors postReportLedgers below.
+const postOffloadLedgers = async (report) => {
+  const result = await withState((state) => {
+    const cycles = [];
+    for (const line of report.pumpLines || []) {
+      const { newCycle } = recordDelivery(state, {
+        stationId: report.stationId,
+        productId: line.productId,
+        deliveredAt: report.deliveredAt,
+        depotTripId: line.depotTripId,
+        litersDelivered: line.litersDelivered,
+        preDeliveryDipstickLiters: line.preDeliveryDipstickLiters,
+        pumpNumber: line.pumpNumber,
+        tankNumber: line.tankNumber
+      });
+      cycles.push(newCycle);
+    }
+    return { cycles };
+  });
+
+  return {
+    cycles: (result.cycles || []).map((item) => item.id)
   };
 };
 
@@ -330,6 +392,54 @@ const handleApi = async (req, res) => {
       const { token } = await getAuthContext(req);
       const report = await getDailyShiftReport(pdfMatch[1], token);
       sendJson(res, 200, { report, message: "PDF export will be generated in the next phase." });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/fuel-deliveries") {
+      const { token, user, profile } = await getAuthContext(req);
+      requireRole(profile, "staff");
+      const payload = normalizeOffloadPayload(await readJsonBody(req));
+      const result = await createFuelDeliveryOffload(payload, user.id, token);
+      sendJson(res, 201, result);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/fuel-deliveries") {
+      const { token, profile } = await getAuthContext(req);
+      const reports = await listFuelDeliveryOffloads({
+        status: url.searchParams.get("status") || "",
+        profile,
+        token
+      });
+      sendJson(res, 200, { reports });
+      return;
+    }
+
+    const offloadConfirmMatch = url.pathname.match(/^\/api\/fuel-deliveries\/([^/]+)\/confirm$/);
+    if (req.method === "POST" && offloadConfirmMatch) {
+      const { token, user, profile } = await getAuthContext(req);
+      requireRole(profile, "manager");
+      const report = await getFuelDeliveryOffload(offloadConfirmMatch[1], token);
+      if (report.stationId !== profile.stationId) throw new Error("Report is outside your station.");
+      if (report.status !== "pending") throw new Error("Only pending reports can be confirmed.");
+      if (Object.keys(report.postedLedgerIds || {}).length) {
+        throw new Error("This report has already been posted.");
+      }
+      const postedLedgerIds = await postOffloadLedgers(report);
+      const confirmed = await confirmFuelDeliveryOffload(report, user.id, postedLedgerIds, token);
+      sendJson(res, 200, confirmed);
+      return;
+    }
+
+    const offloadRejectMatch = url.pathname.match(/^\/api\/fuel-deliveries\/([^/]+)\/reject$/);
+    if (req.method === "POST" && offloadRejectMatch) {
+      const { token, user, profile } = await getAuthContext(req);
+      requireRole(profile, "manager");
+      const report = await getFuelDeliveryOffload(offloadRejectMatch[1], token);
+      if (report.stationId !== profile.stationId) throw new Error("Report is outside your station.");
+      const payload = await readJsonBody(req);
+      const rejected = await rejectFuelDeliveryOffload(offloadRejectMatch[1], user.id, payload.reason || "", token);
+      sendJson(res, 200, rejected);
       return;
     }
 

@@ -24,7 +24,8 @@ import {
   Settings,
   Sun,
   Truck,
-  WalletCards
+  WalletCards,
+  X
 } from "lucide-react";
 import "./styles.css";
 import { isSupabaseConfigured, supabase } from "./supabaseClient.js";
@@ -184,6 +185,14 @@ const api = {
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || "Could not load reports");
     return body.reports || [];
+  },
+  async getFuelDeliveryOffloads(status = "pending") {
+    const response = await fetch(`/api/fuel-deliveries?status=${encodeURIComponent(status)}`, {
+      headers: this.headers()
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not load offloading reports");
+    return body.reports || [];
   }
 };
 
@@ -318,6 +327,15 @@ const emptyForms = {
     settlementLines: [{ debtId: "", amount: 0, paymentMethod: "cash", note: "" }],
     expenseLines: [{ category: EXPENSE_CATEGORIES[0], description: "", amount: 0, paymentMethod: "cash" }],
     notes: ""
+  },
+  offload: {
+    stationId: "",
+    lorryId: "",
+    deliveredAt: eatDateTimeInput(),
+    pumpLines: [
+      { pumpNumber: 1, tankNumber: 1, productId: "", depotTripId: "", litersDelivered: 0, preDeliveryDipstickLiters: 0 }
+    ],
+    notes: ""
   }
 };
 
@@ -406,6 +424,8 @@ function App() {
   const [debts, setDebts] = useState([]);
   const [pendingReports, setPendingReports] = useState([]);
   const [lastSubmittedReport, setLastSubmittedReport] = useState(null);
+  const [pendingOffloads, setPendingOffloads] = useState([]);
+  const [lastSubmittedOffload, setLastSubmittedOffload] = useState(null);
   const [activeShift, setActiveShift] = useState("day");
   const [databaseStatus, setDatabaseStatus] = useState({
     connected: false,
@@ -439,6 +459,12 @@ function App() {
     if (profile?.role !== "manager") return;
     const reports = await api.getDailyShiftReports("pending");
     setPendingReports(reports);
+  };
+
+  const loadPendingOffloads = async (profile = auth.profile) => {
+    if (profile?.role !== "manager") return;
+    const reports = await api.getFuelDeliveryOffloads("pending");
+    setPendingOffloads(reports);
   };
 
   const load = async () => {
@@ -521,6 +547,7 @@ function App() {
     setExpenses(bootstrap.expenses || []);
     setDebts(bootstrap.debts || []);
     await loadPendingReports();
+    await loadPendingOffloads();
     api
       .getDatabaseStatus()
       .then(setDatabaseStatus)
@@ -836,6 +863,48 @@ function App() {
     }));
   };
 
+  const updateOffloadLine = (index, key, value) => {
+    setForms((current) => ({
+      ...current,
+      offload: {
+        ...current.offload,
+        pumpLines: current.offload.pumpLines.map((line, i) =>
+          i === index ? { ...line, [key]: value } : line
+        )
+      }
+    }));
+  };
+
+  const addOffloadLine = () => {
+    setForms((current) => ({
+      ...current,
+      offload: {
+        ...current.offload,
+        pumpLines: [
+          ...current.offload.pumpLines,
+          {
+            pumpNumber: current.offload.pumpLines.length + 1,
+            tankNumber: current.offload.pumpLines.length + 1,
+            productId: "",
+            depotTripId: "",
+            litersDelivered: 0,
+            preDeliveryDipstickLiters: 0
+          }
+        ]
+      }
+    }));
+  };
+
+  const removeOffloadLine = (index) => {
+    setForms((current) => ({
+      ...current,
+      offload: {
+        ...current.offload,
+        pumpLines: current.offload.pumpLines.filter((_, i) => i !== index)
+      }
+    }));
+  };
+
   const submitDailyReport = async () => {
     setError("");
     setNotice("");
@@ -880,6 +949,45 @@ function App() {
     }
   };
 
+  const submitOffload = async () => {
+    setError("");
+    setNotice("");
+    const f = forms.offload;
+    try {
+      const result = await api.post("/api/fuel-deliveries", {
+        stationId: f.stationId,
+        lorryId: f.lorryId || null,
+        deliveredAt: eatInputToIso(f.deliveredAt),
+        pumpLines: f.pumpLines.map((line) => ({
+          ...line,
+          pumpNumber: Number(line.pumpNumber || 1),
+          tankNumber: Number(line.tankNumber || line.pumpNumber || 1),
+          litersDelivered: Number(line.litersDelivered || 0),
+          preDeliveryDipstickLiters: Number(line.preDeliveryDipstickLiters || 0)
+        })),
+        notes: f.notes.trim()
+      });
+      setLastSubmittedOffload(result);
+      setNotice("Offloading report submitted for manager review.");
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const resetOffload = () => {
+    if (!data) return;
+    const stationId = forms.offload.stationId || data.stations[0]?.id || "";
+    setLastSubmittedOffload(null);
+    setForms((current) => ({
+      ...current,
+      offload: {
+        ...emptyForms.offload,
+        stationId,
+        deliveredAt: eatDateTimeInput()
+      }
+    }));
+  };
+
   const resetDailyReport = () => {
     if (!data) return;
     const stationId = forms.dailyReport.stationId || data.stations[0]?.id || "";
@@ -915,6 +1023,30 @@ function App() {
     try {
       await api.post(`/api/daily-shift-reports/${reportId}/reject`, { reason: "Rejected by manager" });
       setNotice("Report rejected.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const confirmOffload = async (reportId) => {
+    setError("");
+    setNotice("");
+    try {
+      await api.post(`/api/fuel-deliveries/${reportId}/confirm`, {});
+      setNotice("Offloading report confirmed and posted to deliveries.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const rejectOffload = async (reportId) => {
+    setError("");
+    setNotice("");
+    try {
+      await api.post(`/api/fuel-deliveries/${reportId}/reject`, { reason: "Rejected by manager" });
+      setNotice("Offloading report rejected.");
       await load();
     } catch (err) {
       setError(err.message);
@@ -969,6 +1101,15 @@ function App() {
     confirmReport,
     rejectReport,
     lastSubmittedReport,
+    pendingOffloads,
+    updateOffloadLine,
+    addOffloadLine,
+    removeOffloadLine,
+    submitOffload,
+    resetOffload,
+    confirmOffload,
+    rejectOffload,
+    lastSubmittedOffload,
     signOut
   };
 
@@ -985,7 +1126,8 @@ function App() {
 
   const managerNavItems = [
     navItems.find((item) => item.id === "dashboard"),
-    { id: "pendingReports", label: "Pending Reports", icon: ClipboardList }
+    { id: "pendingReports", label: "Pending Reports", icon: ClipboardList },
+    { id: "pendingOffloads", label: "Pending Offloading", icon: Truck }
   ].filter(Boolean);
 
   return (
@@ -1077,6 +1219,7 @@ function App() {
 
         {activeView === "dashboard" && <Dashboard {...activeProps} />}
         {activeView === "pendingReports" && <ManagerPendingReports {...activeProps} />}
+        {activeView === "pendingOffloads" && <ManagerPendingOffloads {...activeProps} />}
       </main>
     </div>
   );
@@ -1132,20 +1275,39 @@ function StaffReportShell({
   submitDailyReport,
   resetDailyReport,
   lastSubmittedReport,
+  updateOffloadLine,
+  addOffloadLine,
+  removeOffloadLine,
+  submitOffload,
+  resetOffload,
+  lastSubmittedOffload,
   notice,
   error,
   signOut,
   setForms
 }) {
+  const [staffTab, setStaffTab] = useState("report");
   const report = forms.dailyReport;
+  const offload = forms.offload;
   const stationOptions = data.stations.map((station) => ({ value: station.id, label: station.name }));
   const productOptions = data.products.map((product) => ({ value: product.id, label: product.name }));
+  const lorryOptions = data.lorries.map((lorry) => ({ value: lorry.id, label: lorry.plateNumber }));
   const debtOptions = (data.debts || [])
     .filter((debt) => debt.status === "open")
     .map((debt) => ({
       value: debt.id,
       label: `${debt.debtorName} - ${money(debt.outstandingAmount)}`
     }));
+
+  const depotOptionsFor = (productId) => [
+    { value: "", label: "-- Select depot trip --" },
+    ...(data.depotTrips || [])
+      .filter((trip) => trip.productId === productId)
+      .map((trip) => ({
+        value: trip.id,
+        label: `${trip.invoiceNumber} @ ${money(trip.costPerLiter)}`
+      }))
+  ];
 
   const handleStationChange = (stationId) => {
     setForms((current) => ({
@@ -1189,11 +1351,37 @@ function StaffReportShell({
     );
   }
 
+  if (lastSubmittedOffload) {
+    return (
+      <main className="staff-shell">
+        <section className="success-screen">
+          <ShieldCheck size={42} />
+          <p className="eyebrow">Pending manager confirmation</p>
+          <h1>Offloading report submitted</h1>
+          <p>
+            {stationName(data, lastSubmittedOffload.stationId)} —{" "}
+            {new Date(lastSubmittedOffload.deliveredAt).toLocaleString()}
+          </p>
+          <div className="success-actions">
+            <ActionButton onClick={() => window.print()}>
+              <Receipt size={18} />
+              Print
+            </ActionButton>
+            <ActionButton onClick={resetOffload}>
+              <Plus size={18} />
+              New offloading report
+            </ActionButton>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="staff-shell">
       <header className="staff-topbar">
         <div>
-          <p className="eyebrow">Daily shift report</p>
+          <p className="eyebrow">{staffTab === "report" ? "Daily shift report" : "Offloading report"}</p>
           <h1>Nzilabiche Fuel</h1>
           <span>{auth.profile?.fullName || auth.user?.email}</span>
         </div>
@@ -1202,9 +1390,87 @@ function StaffReportShell({
         </button>
       </header>
 
+      <div className="toggle-group" style={{ marginBottom: "16px" }}>
+        <span className="toggle-label">Report type</span>
+        <div className="toggle-buttons">
+          <button
+            type="button"
+            className={`toggle-btn${staffTab === "report" ? " active" : ""}`}
+            onClick={() => setStaffTab("report")}
+          >
+            <ClipboardList size={15} />
+            Shift report
+          </button>
+          <button
+            type="button"
+            className={`toggle-btn${staffTab === "offload" ? " active" : ""}`}
+            onClick={() => setStaffTab("offload")}
+          >
+            <Truck size={15} />
+            Offloading
+          </button>
+        </div>
+      </div>
+
       {notice && <div className="notice success">{notice}</div>}
       {error && <div className="notice error">{error}</div>}
 
+      {staffTab === "offload" ? (
+        <section className="view-grid">
+          <EntryPanel title="Offloading details" description="Which station and lorry offloaded fuel, and when." icon={Truck}>
+            <FormGrid>
+              <SelectField label="Station" value={offload.stationId} onChange={(v) => updateForm("offload", "stationId", v)} options={stationOptions} />
+              <SelectField label="Lorry" value={offload.lorryId} onChange={(v) => updateForm("offload", "lorryId", v)} options={lorryOptions} />
+              <InputField label="Delivered at" type="datetime-local" value={offload.deliveredAt} onChange={(v) => updateForm("offload", "deliveredAt", v)} />
+            </FormGrid>
+          </EntryPanel>
+
+          <EntryPanel title="Pump / tank lines" description="Add one line per pump or tank that received fuel from this offload." icon={Droplets}>
+            <div className="report-line-grid">
+              {offload.pumpLines.map((line, index) => (
+                <div className="report-line" key={index}>
+                  <SelectField
+                    label="Product"
+                    value={line.productId}
+                    onChange={(v) => updateOffloadLine(index, "productId", v)}
+                    options={productOptions}
+                  />
+                  <InputField label="Pump" type="number" value={line.pumpNumber} onChange={(v) => updateOffloadLine(index, "pumpNumber", v)} />
+                  <InputField label="Tank" type="number" value={line.tankNumber} onChange={(v) => updateOffloadLine(index, "tankNumber", v)} />
+                  <SelectField
+                    label="Depot trip"
+                    value={line.depotTripId}
+                    onChange={(v) => updateOffloadLine(index, "depotTripId", v)}
+                    options={depotOptionsFor(line.productId)}
+                  />
+                  <InputField label="Liters offloaded" type="number" value={line.litersDelivered} onChange={(v) => updateOffloadLine(index, "litersDelivered", v)} />
+                  <InputField label="Pre-delivery dipstick (L)" type="number" value={line.preDeliveryDipstickLiters} onChange={(v) => updateOffloadLine(index, "preDeliveryDipstickLiters", v)} />
+                  {offload.pumpLines.length > 1 && (
+                    <button type="button" className="icon-button" onClick={() => removeOffloadLine(index)} aria-label="Remove line">
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <ActionButton onClick={addOffloadLine}>
+              <Plus size={18} />
+              Add pump/tank line
+            </ActionButton>
+          </EntryPanel>
+
+          <EntryPanel title="Notes" description="Optional notes for the manager reviewing this offload." icon={ClipboardList}>
+            <label className="field">
+              <span>Notes</span>
+              <textarea value={offload.notes} onChange={(event) => updateForm("offload", "notes", event.target.value)} />
+            </label>
+            <ActionButton onClick={submitOffload}>
+              <Plus size={18} />
+              Submit offloading report
+            </ActionButton>
+          </EntryPanel>
+        </section>
+      ) : (
       <section className="view-grid">
         <EntryPanel title="Shift details" description="Choose the station, business date, and shift for this report." icon={ClipboardList}>
           <FormGrid>
@@ -1295,6 +1561,7 @@ function StaffReportShell({
           </ActionButton>
         </EntryPanel>
       </section>
+      )}
     </main>
   );
 }
@@ -1333,6 +1600,30 @@ function ManagerPendingReports({ data, pendingReports, confirmReport, rejectRepo
           <span className="table-actions">
             <button type="button" onClick={() => confirmReport(report.id)}>Confirm</button>
             <button type="button" onClick={() => rejectReport(report.id)}>Reject</button>
+          </span>
+        ])}
+      />
+    </section>
+  );
+}
+
+function ManagerPendingOffloads({ data, pendingOffloads, confirmOffload, rejectOffload }) {
+  return (
+    <section className="view-grid">
+      <DataTable
+        title="Pending offloading reports"
+        columns={["Station", "Lorry", "Delivered at", "Pump lines", "Total liters", "Actions"]}
+        rows={pendingOffloads.map((report) => [
+          stationName(data, report.stationId),
+          report.lorryId ? lorryName(data, report.lorryId) : "Not set",
+          new Date(report.deliveredAt).toLocaleString(),
+          (report.pumpLines || [])
+            .map((line) => `${productName(data, line.productId)} (pump ${line.pumpNumber})`)
+            .join(", "),
+          liters((report.pumpLines || []).reduce((sum, line) => sum + Number(line.litersDelivered || 0), 0)),
+          <span className="table-actions">
+            <button type="button" onClick={() => confirmOffload(report.id)}>Confirm</button>
+            <button type="button" onClick={() => rejectOffload(report.id)}>Reject</button>
           </span>
         ])}
       />
