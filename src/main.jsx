@@ -333,7 +333,7 @@ const emptyForms = {
     lorryId: "",
     deliveredAt: eatDateTimeInput(),
     pumpLines: [
-      { pumpNumber: 1, tankNumber: 1, productId: "", depotTripId: "", litersDelivered: 0, preDeliveryDipstickLiters: 0 }
+      { tankNumber: 1, productId: "", depotTripId: "", litersDelivered: 0, preDeliveryDipstickLiters: 0 }
     ],
     notes: ""
   }
@@ -868,9 +868,15 @@ function App() {
       ...current,
       offload: {
         ...current.offload,
-        pumpLines: current.offload.pumpLines.map((line, i) =>
-          i === index ? { ...line, [key]: value } : line
-        )
+        pumpLines: current.offload.pumpLines.map((line, i) => {
+          if (i !== index) return line;
+          // Changing the product can change how many tanks exist for it —
+          // reset the tank selection to tank 1 whenever the product changes.
+          if (key === "productId") {
+            return { ...line, productId: value, tankNumber: 1, depotTripId: "" };
+          }
+          return { ...line, [key]: value };
+        })
       }
     }));
   };
@@ -883,8 +889,7 @@ function App() {
         pumpLines: [
           ...current.offload.pumpLines,
           {
-            pumpNumber: current.offload.pumpLines.length + 1,
-            tankNumber: current.offload.pumpLines.length + 1,
+            tankNumber: 1,
             productId: "",
             depotTripId: "",
             litersDelivered: 0,
@@ -960,8 +965,7 @@ function App() {
         deliveredAt: eatInputToIso(f.deliveredAt),
         pumpLines: f.pumpLines.map((line) => ({
           ...line,
-          pumpNumber: Number(line.pumpNumber || 1),
-          tankNumber: Number(line.tankNumber || line.pumpNumber || 1),
+          tankNumber: Number(line.tankNumber || 1),
           litersDelivered: Number(line.litersDelivered || 0),
           preDeliveryDipstickLiters: Number(line.preDeliveryDipstickLiters || 0)
         })),
@@ -1309,6 +1313,16 @@ function StaffReportShell({
       }))
   ];
 
+  const selectedOffloadStation = data.stations.find((station) => station.id === offload.stationId);
+  const tankOptionsFor = (productId) => {
+    const product = data.products.find((item) => item.id === productId);
+    const tankCount = productTankCount(selectedOffloadStation, product);
+    return Array.from({ length: tankCount }, (_, index) => ({
+      value: index + 1,
+      label: `Tank ${index + 1}`
+    }));
+  };
+
   const handleStationChange = (stationId) => {
     setForms((current) => ({
       ...current,
@@ -1425,7 +1439,7 @@ function StaffReportShell({
             </FormGrid>
           </EntryPanel>
 
-          <EntryPanel title="Pump / tank lines" description="Add one line per pump or tank that received fuel from this offload." icon={Droplets}>
+          <EntryPanel title="Tank lines" description="Add one line per tank that received fuel from this offload. A tank can feed more than one pump — that's handled automatically." icon={Droplets}>
             <div className="report-line-grid">
               {offload.pumpLines.map((line, index) => (
                 <div className="report-line" key={index}>
@@ -1435,8 +1449,12 @@ function StaffReportShell({
                     onChange={(v) => updateOffloadLine(index, "productId", v)}
                     options={productOptions}
                   />
-                  <InputField label="Pump" type="number" value={line.pumpNumber} onChange={(v) => updateOffloadLine(index, "pumpNumber", v)} />
-                  <InputField label="Tank" type="number" value={line.tankNumber} onChange={(v) => updateOffloadLine(index, "tankNumber", v)} />
+                  <SelectField
+                    label="Tank"
+                    value={line.tankNumber}
+                    onChange={(v) => updateOffloadLine(index, "tankNumber", Number(v))}
+                    options={tankOptionsFor(line.productId)}
+                  />
                   <SelectField
                     label="Depot trip"
                     value={line.depotTripId}
@@ -1612,13 +1630,13 @@ function ManagerPendingOffloads({ data, pendingOffloads, confirmOffload, rejectO
     <section className="view-grid">
       <DataTable
         title="Pending offloading reports"
-        columns={["Station", "Lorry", "Delivered at", "Pump lines", "Total liters", "Actions"]}
+        columns={["Station", "Lorry", "Delivered at", "Tank lines", "Total liters", "Actions"]}
         rows={pendingOffloads.map((report) => [
           stationName(data, report.stationId),
           report.lorryId ? lorryName(data, report.lorryId) : "Not set",
           new Date(report.deliveredAt).toLocaleString(),
           (report.pumpLines || [])
-            .map((line) => `${productName(data, line.productId)} (pump ${line.pumpNumber})`)
+            .map((line) => `${productName(data, line.productId)} (tank ${line.tankNumber})`)
             .join(", "),
           liters((report.pumpLines || []).reduce((sum, line) => sum + Number(line.litersDelivered || 0), 0)),
           <span className="table-actions">

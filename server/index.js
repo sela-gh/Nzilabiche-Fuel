@@ -165,7 +165,7 @@ const normalizeOffloadPayload = (payload) => {
   );
 
   if (!pumpLines.length) {
-    throw new Error("Add at least one pump/tank line with liters offloaded.");
+    throw new Error("Add at least one tank line with liters offloaded.");
   }
 
   return {
@@ -173,8 +173,7 @@ const normalizeOffloadPayload = (payload) => {
     lorryId: payload.lorryId || null,
     deliveredAt: payload.deliveredAt,
     pumpLines: pumpLines.map((line) => ({
-      pumpNumber: Number(line.pumpNumber || 1),
-      tankNumber: Number(line.tankNumber || line.pumpNumber || 1),
+      tankNumber: Number(line.tankNumber || 1),
       productId: line.productId,
       depotTripId: line.depotTripId,
       litersDelivered: Number(line.litersDelivered || 0),
@@ -187,6 +186,9 @@ const normalizeOffloadPayload = (payload) => {
 // Posts a confirmed offloading report into the real delivery ledger
 // (delivery_cycles), reusing the same recordDelivery logic the granular
 // /api/deliveries endpoint uses. Mirrors postReportLedgers below.
+// Cycles are tracked per TANK, not per pump — recordDelivery derives
+// pumpNumber from tankNumber automatically when pumpNumber is omitted,
+// since a tank can feed more than one pump.
 const postOffloadLedgers = async (report) => {
   const result = await withState((state) => {
     const cycles = [];
@@ -198,7 +200,6 @@ const postOffloadLedgers = async (report) => {
         depotTripId: line.depotTripId,
         litersDelivered: line.litersDelivered,
         preDeliveryDipstickLiters: line.preDeliveryDipstickLiters,
-        pumpNumber: line.pumpNumber,
         tankNumber: line.tankNumber
       });
       cycles.push(newCycle);
