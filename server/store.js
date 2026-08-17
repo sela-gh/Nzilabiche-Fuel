@@ -220,18 +220,18 @@ const mapDailyShiftReport = (row) => ({
   confirmedAt: row.confirmed_at,
   rejectedBy: row.rejected_by,
   rejectedAt: row.rejected_at,
-  rejectionReason: row.rejection_reason || "",
-  pumpPrices: row.pump_prices || [],
-  meterLines: row.meter_lines || [],
+  rejectionReason: row.reject_reason || "", // Fixed mapping
+  pumpPrices: row.fuel_lines?.pumpPrices || [], // Unpacked from fuel_lines
+  meterLines: row.fuel_lines?.meterLines || [], // Unpacked from fuel_lines
   dippingLines: row.dipping_lines || [],
-  creditLines: row.credit_lines || [],
-  settlementLines: row.settlement_lines || [],
+  creditLines: row.credit_issued_lines || [], // Fixed mapping
+  settlementLines: row.credit_settlement_lines || [], // Fixed mapping
   expenseLines: row.expense_lines || [],
   notes: row.notes || "",
   totals: row.totals || {},
-  postedLedgerIds: row.posted_ledger_ids || {},
-  createdAt: row.created_at,
-  updatedAt: row.updated_at
+  postedLedgerIds: row.posted_record_ids || {}, // Fixed mapping
+  createdAt: row.submitted_at, // Fallback (created_at missing in DB)
+  updatedAt: row.submitted_at  // Fallback (updated_at missing in DB)
 });
 
 // ---------------------------------------------------------------------------
@@ -605,15 +605,18 @@ export const getUserProfile = async (userId, token) => {
     .from("user_profiles")
     .select("*")
     .eq("user_id", userId)
-    .single();
+    .maybeSingle(); // Prevents the crash if 0 rows are found
+
   if (error) throw new Error(error.message);
+  
+  // Provide a safe fallback so the app loads even if the profile is missing
+  if (!data) return { userId, fullName: "Pending Profile", role: "staff", stationId: null };
+
   return mapUserProfile(data);
 };
 
 export const createDailyShiftReport = async (payload, userId, token) => {
-  if (!isSupabaseConfigured) {
-    throw new Error("Daily shift reports require Supabase.");
-  }
+  if (!isSupabaseConfigured) throw new Error("Daily shift reports require Supabase.");
 
   const client = createSupabaseForToken(token);
   const { data, error } = await client
@@ -624,17 +627,23 @@ export const createDailyShiftReport = async (payload, userId, token) => {
       shift: payload.shift,
       status: "pending",
       submitted_by: userId,
-      pump_prices: payload.pumpPrices || [],
-      meter_lines: payload.meterLines || [],
+      submitted_at: new Date().toISOString(),
+      // Combine frontend arrays into the single DB fuel_lines JSONB column
+      fuel_lines: { 
+        pumpPrices: payload.pumpPrices || [], 
+        meterLines: payload.meterLines || [] 
+      },
       dipping_lines: payload.dippingLines || [],
-      credit_lines: payload.creditLines || [],
-      settlement_lines: payload.settlementLines || [],
+      credit_issued_lines: payload.creditLines || [], // Fixed mapping
+      credit_settlement_lines: payload.settlementLines || [], // Fixed mapping
       expense_lines: payload.expenseLines || [],
+      product_sale_lines: [], // Added missing required column
       notes: payload.notes || "",
       totals: payload.totals || {}
     })
     .select()
     .single();
+    
   if (error) throw new Error(error.message);
   return mapDailyShiftReport(data);
 };
@@ -648,8 +657,8 @@ export const listDailyShiftReports = async ({ status, profile, token }) => {
     .select("*")
     .order("submitted_at", { ascending: false });
 
+  // Managers see every station's reports; staff only see their own submissions.
   if (status) query = query.eq("status", status);
-  if (profile?.role === "manager") query = query.eq("station_id", profile.stationId);
   if (profile?.role === "staff") query = query.eq("submitted_by", profile.userId);
 
   const { data, error } = await query;
@@ -678,8 +687,7 @@ export const confirmDailyShiftReport = async (report, userId, postedLedgerIds, t
       status: "confirmed",
       confirmed_by: userId,
       confirmed_at: new Date().toISOString(),
-      posted_ledger_ids: postedLedgerIds,
-      updated_at: new Date().toISOString()
+      posted_record_ids: postedLedgerIds // Fixed mapping
     })
     .eq("id", report.id)
     .eq("status", "pending")
@@ -697,8 +705,7 @@ export const rejectDailyShiftReport = async (id, userId, reason, token) => {
       status: "rejected",
       rejected_by: userId,
       rejected_at: new Date().toISOString(),
-      rejection_reason: reason || "",
-      updated_at: new Date().toISOString()
+      reject_reason: reason || "" // Fixed mapping
     })
     .eq("id", id)
     .eq("status", "pending")
@@ -744,8 +751,8 @@ export const listFuelDeliveryOffloads = async ({ status, profile, token }) => {
     .select("*")
     .order("submitted_at", { ascending: false });
 
+  // Managers see every station's reports; staff only see their own submissions.
   if (status) query = query.eq("status", status);
-  if (profile?.role === "manager") query = query.eq("station_id", profile.stationId);
   if (profile?.role === "staff") query = query.eq("submitted_by", profile.userId);
 
   const { data, error } = await query;

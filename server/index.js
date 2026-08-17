@@ -98,18 +98,39 @@ const requireRole = (profile, role) => {
   }
 };
 
+// Managers are the admin/oversight role — they see and can act on every
+// station. Staff are scoped to their one assigned station. Reference data
+// that isn't station-specific (products, lorries, depot trips) stays
+// unfiltered for staff too, since they still need to pick a valid depot
+// trip / lorry when submitting a new report or offload.
 const filterStateForProfile = (state, profile) => {
-  if (profile.role !== "manager" || !profile.stationId) return state;
+  // If it's a manager, give them the full unfiltered state
+  if (profile.role !== "staff") return state;
 
   const stationId = profile.stationId;
-  const scopedCycles = state.cycles.filter((item) => item.stationId === stationId);
-  const depotTripIds = new Set(scopedCycles.map((item) => item.depotTripId).filter(Boolean));
+  
+  // SECURE FALLBACK: If a staff member has no assigned station, 
+  // return empty arrays so their app is effectively locked down.
+  if (!stationId) {
+    return {
+      ...state,
+      stations: [],
+      cycles: [],
+      dailyDeposits: [],
+      productSales: [],
+      internalFuelUses: [],
+      pumpMeterReadings: [],
+      expenses: [],
+      debts: [],
+      pumpTankLinks: []
+    };
+  }
 
+  // If they are assigned, filter strictly to their station
   return {
     ...state,
     stations: state.stations.filter((item) => item.id === stationId),
-    depotTrips: state.depotTrips.filter((item) => depotTripIds.has(item.id)),
-    cycles: scopedCycles,
+    cycles: state.cycles.filter((item) => item.stationId === stationId),
     dailyDeposits: state.dailyDeposits.filter((item) => item.stationId === stationId),
     productSales: (state.productSales || []).filter((item) => item.stationId === stationId),
     internalFuelUses: state.internalFuelUses.filter((item) => item.stationId === stationId),
@@ -365,7 +386,6 @@ const handleApi = async (req, res) => {
       const { token, user, profile } = await getAuthContext(req);
       requireRole(profile, "manager");
       const report = await getDailyShiftReport(confirmMatch[1], token);
-      if (report.stationId !== profile.stationId) throw new Error("Report is outside your station.");
       if (report.status !== "pending") throw new Error("Only pending reports can be confirmed.");
       if (Object.keys(report.postedLedgerIds || {}).length) {
         throw new Error("This report has already been posted.");
@@ -381,7 +401,6 @@ const handleApi = async (req, res) => {
       const { token, user, profile } = await getAuthContext(req);
       requireRole(profile, "manager");
       const report = await getDailyShiftReport(rejectMatch[1], token);
-      if (report.stationId !== profile.stationId) throw new Error("Report is outside your station.");
       const payload = await readJsonBody(req);
       const rejected = await rejectDailyShiftReport(rejectMatch[1], user.id, payload.reason || "", token);
       sendJson(res, 200, rejected);
@@ -421,7 +440,6 @@ const handleApi = async (req, res) => {
       const { token, user, profile } = await getAuthContext(req);
       requireRole(profile, "manager");
       const report = await getFuelDeliveryOffload(offloadConfirmMatch[1], token);
-      if (report.stationId !== profile.stationId) throw new Error("Report is outside your station.");
       if (report.status !== "pending") throw new Error("Only pending reports can be confirmed.");
       if (Object.keys(report.postedLedgerIds || {}).length) {
         throw new Error("This report has already been posted.");
@@ -437,7 +455,6 @@ const handleApi = async (req, res) => {
       const { token, user, profile } = await getAuthContext(req);
       requireRole(profile, "manager");
       const report = await getFuelDeliveryOffload(offloadRejectMatch[1], token);
-      if (report.stationId !== profile.stationId) throw new Error("Report is outside your station.");
       const payload = await readJsonBody(req);
       const rejected = await rejectFuelDeliveryOffload(offloadRejectMatch[1], user.id, payload.reason || "", token);
       sendJson(res, 200, rejected);
@@ -553,8 +570,13 @@ if (req.method === "POST" && url.pathname === "/api/debts/issue") {
 
     sendJson(res, 404, { error: "Route not found." });
   } catch (error) {
-    console.error("[api error]", error.message);
-    sendJson(res, 400, { error: error.message || "Request failed." });
+    console.error("[api error]", req.url, {
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+      code: error.code
+    });
+    sendJson(res, 400, { error: error.message || "Request failed.", details: error.details, hint: error.hint });
   }
 };
 

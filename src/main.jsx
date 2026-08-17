@@ -217,7 +217,6 @@ const emptyForms = {
     lines: [
       { productId: "product-petrol", pumpNumber: 1, cashDeposited: 0, pumpPrice: 0 },
       { productId: "product-diesel", pumpNumber: 1, cashDeposited: 0, pumpPrice: 0 },
-      { productId: "product-kerosene", pumpNumber: 1, cashDeposited: 0, pumpPrice: 0 }
     ]
   },
   depot: {
@@ -358,34 +357,40 @@ function pumpTankLinksFor(links, stationId, productId) {
 function buildDepositLines(products, stations, stationId, pumpTankLinks = []) {
   const station = stations.find(s => s.id === stationId);
   const lines = [];
+
   for (const product of products) {
-    const tankCount = productTankCount(station, product);
-    const productLines = new Map();
-    for (let pump = 1; pump <= tankCount; pump++) {
-      productLines.set(pump, {
-        productId: product.id,
-        pumpNumber: pump,
-        tankNumber: pump,
-        cashDeposited: 0,
-        pumpPrice: 0
-      });
-    }
-
     const configuredLinks = pumpTankLinksFor(pumpTankLinks, stationId, product.id);
-    for (const link of configuredLinks) {
-      const pumpNumber = Number(link.pumpNumber || 1);
-      productLines.set(pumpNumber, {
-        productId: product.id,
-        pumpNumber,
-        tankNumber: Number(link.tankNumber || 1),
-        cashDeposited: 0,
-        pumpPrice: 0
-      });
-    }
 
-    lines.push(...[...productLines.values()].sort((a, b) => a.pumpNumber - b.pumpNumber));
+    if (configuredLinks.length > 0) {
+      // Use explicit pump→tank links — no fallback loop needed
+      for (const link of configuredLinks) {
+        lines.push({
+          productId: product.id,
+          pumpNumber: Number(link.pumpNumber || 1),
+          tankNumber: Number(link.tankNumber || 1),
+          cashDeposited: 0,
+          pumpPrice: 0
+        });
+      }
+    } else {
+      // No links configured — fall back to tankCount
+      const tankCount = productTankCount(station, product);
+      for (let pump = 1; pump <= tankCount; pump++) {
+        lines.push({
+          productId: product.id,
+          pumpNumber: pump,
+          tankNumber: pump,
+          cashDeposited: 0,
+          pumpPrice: 0
+        });
+      }
+    }
   }
-  return lines;
+
+  return lines.sort((a, b) => {
+    if (a.productId !== b.productId) return a.productId.localeCompare(b.productId);
+    return a.pumpNumber - b.pumpNumber;
+  });
 }
 
 function buildReportMeterLines(products, stations, stationId, pumpTankLinks = []) {
@@ -474,6 +479,7 @@ function App() {
     const firstStation = bootstrap.stations[0]?.id || "";
     const firstProduct = bootstrap.products[0]?.id || "";
     const firstLorry = bootstrap.lorries[0]?.id || "";
+    const firstDepotTrip = bootstrap.depotTrips?.find(t => t.productId === firstProduct)?.id || "";
     setForms((current) => ({
       ...current,
       deposit: {
@@ -528,7 +534,7 @@ function App() {
         ...current.debtIssue,
         stationId: current.debtIssue.stationId || firstStation
       },
-      dailyReport: {
+dailyReport: {
         ...current.dailyReport,
         stationId: current.dailyReport.stationId || firstStation,
         meterLines: current.dailyReport.meterLines.length
@@ -542,6 +548,17 @@ function App() {
         dippingLines: current.dailyReport.dippingLines.length
           ? current.dailyReport.dippingLines
           : buildDippingLines(bootstrap.products, bootstrap.stations, current.dailyReport.stationId || firstStation)
+      },
+      // ADDED THIS BLOCK TO FIX THE OFFLOADING ERROR
+      offload: {
+        ...current.offload,
+        stationId: current.offload.stationId || firstStation,
+        lorryId: current.offload.lorryId || firstLorry,
+        pumpLines: current.offload.pumpLines.map((line, idx) => 
+          idx === 0 && !line.productId
+            ? { ...line, productId: firstProduct, depotTripId: firstDepotTrip }
+            : line
+        )
       }
     }));
     setExpenses(bootstrap.expenses || []);
@@ -870,10 +887,10 @@ function App() {
         ...current.offload,
         pumpLines: current.offload.pumpLines.map((line, i) => {
           if (i !== index) return line;
-          // Changing the product can change how many tanks exist for it —
-          // reset the tank selection to tank 1 whenever the product changes.
           if (key === "productId") {
-            return { ...line, productId: value, tankNumber: 1, depotTripId: "" };
+            // Find the first depot trip that matches the newly selected product
+            const defaultDepot = data.depotTrips?.find(t => t.productId === value)?.id || "";
+            return { ...line, productId: value, tankNumber: 1, depotTripId: defaultDepot };
           }
           return { ...line, [key]: value };
         })
@@ -881,7 +898,10 @@ function App() {
     }));
   };
 
-  const addOffloadLine = () => {
+const addOffloadLine = () => {
+    const firstProduct = data.products[0]?.id || "";
+    const firstDepotTrip = data.depotTrips?.find(t => t.productId === firstProduct)?.id || "";
+    
     setForms((current) => ({
       ...current,
       offload: {
@@ -890,8 +910,8 @@ function App() {
           ...current.offload.pumpLines,
           {
             tankNumber: 1,
-            productId: "",
-            depotTripId: "",
+            productId: firstProduct,
+            depotTripId: firstDepotTrip,
             litersDelivered: 0,
             preDeliveryDipstickLiters: 0
           }
@@ -1099,6 +1119,9 @@ function App() {
     databaseStatus,
     activeShift,
     setActiveShift,
+    setError,
+    setNotice,
+    load,
     pendingReports,
     submitDailyReport,
     resetDailyReport,
@@ -1129,10 +1152,10 @@ function App() {
   }
 
   const managerNavItems = [
-    navItems.find((item) => item.id === "dashboard"),
+    ...navItems,
     { id: "pendingReports", label: "Pending Reports", icon: ClipboardList },
     { id: "pendingOffloads", label: "Pending Offloading", icon: Truck }
-  ].filter(Boolean);
+  ];
 
   return (
     <div className={`app-shell${activeShift === "night" ? " night-mode" : ""}`}>
@@ -1222,6 +1245,14 @@ function App() {
         {error && <div className="notice error">{error}</div>}
 
         {activeView === "dashboard" && <Dashboard {...activeProps} />}
+        {activeView === "deposits" && <Deposits {...activeProps} />}
+        {activeView === "deliveries" && <Deliveries {...activeProps} />}
+        {activeView === "depot" && <DepotTrips {...activeProps} />}
+        {activeView === "sales" && <Sales {...activeProps} />}
+        {activeView === "expenses" && <Expenses {...activeProps} />}
+        {activeView === "variance" && <Variance {...activeProps} />}
+        {activeView === "reports" && <Reports {...activeProps} />}
+        {activeView === "setup" && <Setup {...activeProps} />}
         {activeView === "pendingReports" && <ManagerPendingReports {...activeProps} />}
         {activeView === "pendingOffloads" && <ManagerPendingOffloads {...activeProps} />}
       </main>
@@ -1335,51 +1366,304 @@ function StaffReportShell({
     }));
   };
 
-  if (lastSubmittedReport) {
-    return (
-      <main className="staff-shell">
-        <section className="success-screen">
-          <ShieldCheck size={42} />
-          <p className="eyebrow">Pending manager confirmation</p>
-          <h1>Report submitted</h1>
-          <p>
-            {stationName(data, lastSubmittedReport.stationId)} {shiftBadge(lastSubmittedReport.shift)} for{" "}
-            {lastSubmittedReport.reportDate}
+  const thStyle = { textAlign: 'left', padding: '6px 10px', fontSize: '10.5px',
+  fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6b7280' };
+const thStyleR = { ...thStyle, textAlign: 'right' };
+const tdStyle = { padding: '8px 10px', color: '#111827' };
+const tdStyleR = { ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+
+if (lastSubmittedReport) {
+  // Group meter lines by product, filter out zero rows
+  const meterByProduct = {};
+  (lastSubmittedReport.meterLines || []).forEach(m => {
+    const litresSold = Number(m.closingReading) - Number(m.openingReading);
+    if (litresSold <= 0) return; // skip zero rows
+    const name = productName(data, m.productId);
+    if (!meterByProduct[name]) meterByProduct[name] = [];
+    meterByProduct[name].push(m);
+  });
+
+  // Group dip lines by product, filter zero rows
+  const dipByProduct = {};
+  (lastSubmittedReport.dippingLines || []).forEach(d => {
+    if (!d.openingDip && !d.closingDip) return; // skip zero rows
+    const name = productName(data, d.productId);
+    if (!dipByProduct[name]) dipByProduct[name] = [];
+    dipByProduct[name].push(d);
+  });
+
+  const totalRevenue = (lastSubmittedReport.meterLines || []).reduce((sum, m) => {
+    const litres = Math.max(0, Number(m.closingReading) - Number(m.openingReading));
+    return sum + litres * Number(m.pumpPrice || 0);
+  }, 0);
+
+  const totalLitres = (lastSubmittedReport.meterLines || []).reduce((sum, m) => {
+    return sum + Math.max(0, Number(m.closingReading) - Number(m.openingReading));
+  }, 0);
+
+  return (
+    <main className="staff-shell">
+      <section className="success-screen" style={{ maxWidth: '860px', alignItems: 'stretch', textAlign: 'left' }}>
+
+        {/* Header */}
+        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+          <ShieldCheck size={42} style={{ margin: '0 auto' }} className="no-print" />
+          <h1 style={{ marginTop: '1rem' }}>Shift Report Submitted</h1>
+          <p style={{ fontSize: '1.1rem', color: 'var(--text-2)' }}>
+            {stationName(data, lastSubmittedReport.stationId)}
+            &nbsp;·&nbsp;{shiftBadge(lastSubmittedReport.shift)}
+            &nbsp;·&nbsp;{lastSubmittedReport.reportDate}
           </p>
-          <div className="success-actions">
-            <ActionButton onClick={() => window.print()}>
-              <Receipt size={18} />
-              Print
-            </ActionButton>
-            <ActionButton onClick={() => navigator.share?.({ title: "Daily shift report", text: lastSubmittedReport.id })}>
-              <Phone size={18} />
-              Share
-            </ActionButton>
-            <ActionButton onClick={resetDailyReport}>
-              <Plus size={18} />
-              New report
-            </ActionButton>
+        </div>
+
+        {/* Pump Meters — grouped by product */}
+        <div className="receipt-content" style={{ marginBottom: '2rem' }}>
+          {Object.keys(meterByProduct).length > 0 && (
+            <div style={{ marginBottom: '1.5rem' }}>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: '.06em', color: 'var(--text-2)', borderBottom: '1px solid var(--border)',
+                paddingBottom: '6px', marginBottom: '12px' }}>
+                Pump Meter Readings
+              </h3>
+              {Object.entries(meterByProduct).map(([prodName, lines]) => {
+                const prodLitres = lines.reduce((s, m) =>
+                  s + Math.max(0, Number(m.closingReading) - Number(m.openingReading)), 0);
+                const prodRevenue = lines.reduce((s, m) => {
+                  const l = Math.max(0, Number(m.closingReading) - Number(m.openingReading));
+                  return s + l * Number(m.pumpPrice || 0);
+                }, 0);
+
+                return (
+                  <div key={prodName} style={{ marginBottom: '1.2rem' }}>
+                    {/* Product group header */}
+                    <div style={{ background: 'var(--surface-2)', padding: '6px 12px',
+                      borderRadius: '6px', fontWeight: 700, fontSize: '13px',
+                      marginBottom: '6px', display: 'flex', justifyContent: 'space-between' }}>
+                      <span>⛽ {prodName}</span>
+                    </div>
+
+                    {/* Pump rows */}
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                      <thead>
+                        <tr style={{ background: 'var(--surface-2)' }}>
+                          <th style={thStyle}>Pump</th>
+                          <th style={thStyleR}>Opening</th>
+                          <th style={thStyleR}>Closing</th>
+                          <th style={thStyleR}>Litres sold</th>
+                          <th style={thStyleR}>Price/L</th>
+                          <th style={thStyleR}>Revenue</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {lines.map((m, i) => {
+                          const litres = Math.max(0, Number(m.closingReading) - Number(m.openingReading));
+                          const rev = litres * Number(m.pumpPrice || 0);
+                          return (
+                            <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                              <td style={tdStyle}>Pump {m.pumpNumber}</td>
+                              <td style={tdStyleR}>{Number(m.openingReading).toLocaleString()}</td>
+                              <td style={tdStyleR}>{Number(m.closingReading).toLocaleString()}</td>
+                              <td style={{ ...tdStyleR, color: '#2d6a4f', fontWeight: 700 }}>{liters(litres)}</td>
+                              <td style={tdStyleR}>{money(m.pumpPrice)}</td>
+                              <td style={{ ...tdStyleR, fontWeight: 700 }}>{money(rev)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      {/* Subtotal row */}
+                      <tfoot>
+                        <tr style={{ background: '#f0fdf4', borderTop: '2px solid #2d6a4f' }}>
+                          <td colSpan={3} style={{ ...tdStyle, fontWeight: 800 }}>{prodName} subtotal</td>
+                          <td style={{ ...tdStyleR, fontWeight: 800, color: '#2d6a4f' }}>{liters(prodLitres)}</td>
+                          <td style={tdStyleR}></td>
+                          <td style={{ ...tdStyleR, fontWeight: 800 }}>{money(prodRevenue)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                );
+              })}
+
+              {/* Grand total */}
+              <div style={{ background: '#1a2332', color: '#fff', borderRadius: '8px',
+                padding: '12px 16px', display: 'flex', justifyContent: 'space-between',
+                alignItems: 'center', marginTop: '8px' }}>
+                <span style={{ fontWeight: 800, fontSize: '14px' }}>Total revenue</span>
+                <span style={{ fontWeight: 800, fontSize: '16px' }}>{money(totalRevenue)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Dipping report */}
+          {Object.keys(dipByProduct).length > 0 && (
+            <div style={{ marginBottom: '1.5rem' }}>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: '.06em', color: 'var(--text-2)', borderBottom: '1px solid var(--border)',
+                paddingBottom: '6px', marginBottom: '12px' }}>
+                Dipping Report
+              </h3>
+              {Object.entries(dipByProduct).map(([prodName, lines]) => (
+                <div key={prodName} style={{ marginBottom: '1rem' }}>
+                  <div style={{ background: 'var(--surface-2)', padding: '6px 12px',
+                    borderRadius: '6px', fontWeight: 700, fontSize: '13px', marginBottom: '6px' }}>
+                    {prodName}
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead>
+                      <tr style={{ background: 'var(--surface-2)' }}>
+                        <th style={thStyle}>Tank</th>
+                        <th style={thStyleR}>Morning dip (L)</th>
+                        <th style={thStyleR}>Evening dip (L)</th>
+                        <th style={thStyleR}>Consumed (L)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lines.map((d, i) => {
+                        const consumed = Math.max(0, Number(d.openingDip) - Number(d.closingDip));
+                        return (
+                          <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                            <td style={tdStyle}>Tank {d.tankNumber}</td>
+                            <td style={tdStyleR}>{Number(d.openingDip).toLocaleString()}</td>
+                            <td style={tdStyleR}>{Number(d.closingDip).toLocaleString()}</td>
+                            <td style={{ ...tdStyleR, color: '#2d6a4f', fontWeight: 700 }}>{liters(consumed)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Expenses */}
+          {(lastSubmittedReport.expenseLines || []).filter(e => Number(e.amount) > 0).length > 0 && (
+            <div style={{ marginBottom: '1.5rem' }}>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: '.06em', color: 'var(--text-2)', borderBottom: '1px solid var(--border)',
+                paddingBottom: '6px', marginBottom: '12px' }}>
+                Expenses
+              </h3>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                <thead>
+                  <tr style={{ background: 'var(--surface-2)' }}>
+                    <th style={thStyle}>Category</th>
+                    <th style={thStyle}>Description</th>
+                    <th style={thStyleR}>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lastSubmittedReport.expenseLines
+                    .filter(e => Number(e.amount) > 0)
+                    .map((e, i) => (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td style={tdStyle}>{e.category}</td>
+                        <td style={tdStyle}>{e.description}</td>
+                        <td style={{ ...tdStyleR, color: '#dc2626' }}>{money(e.amount)}</td>
+                      </tr>
+                    ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ borderTop: '2px solid #dc2626' }}>
+                    <td colSpan={2} style={{ ...tdStyle, fontWeight: 800 }}>Total expenses</td>
+                    <td style={{ ...tdStyleR, fontWeight: 800, color: '#dc2626' }}>
+                      {money(lastSubmittedReport.totals?.expenses)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+
+          {/* Summary box */}
+          <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)',
+            borderRadius: '10px', padding: '16px', marginTop: '8px' }}>
+            <h3 style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase',
+              letterSpacing: '.06em', color: 'var(--text-2)', marginBottom: '12px' }}>
+              Summary
+            </h3>
+            {[
+              { label: 'Total fuel revenue', value: money(totalRevenue), color: '#2d6a4f' },
+              { label: 'Less: credit issued', value: `− ${money(lastSubmittedReport.totals?.creditsIssued || 0)}`, color: '#dc2626' },
+              { label: 'Plus: debts settled', value: `+ ${money(lastSubmittedReport.totals?.creditsSettled || 0)}`, color: '#2d6a4f' },
+              { label: 'Less: expenses', value: `− ${money(lastSubmittedReport.totals?.expenses || 0)}`, color: '#dc2626' },
+            ].map(row => (
+              <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between',
+                padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: '13px' }}>
+                <span style={{ color: 'var(--text-2)' }}>{row.label}</span>
+                <strong style={{ color: row.color }}>{row.value}</strong>
+              </div>
+            ))}
+            <div style={{ display: 'flex', justifyContent: 'space-between',
+              padding: '10px 0 0', fontSize: '15px', fontWeight: 800 }}>
+              <span>Net cash</span>
+              <span style={{ color: '#2d6a4f' }}>
+                {money(totalRevenue
+                  - (lastSubmittedReport.totals?.creditsIssued || 0)
+                  + (lastSubmittedReport.totals?.creditsSettled || 0)
+                  - (lastSubmittedReport.totals?.expenses || 0)
+                )}
+              </span>
+            </div>
           </div>
-        </section>
-      </main>
-    );
-  }
+        </div>
+
+        {/* Actions */}
+        <div className="success-actions no-print" style={{ justifyContent: 'center' }}>
+          <ActionButton onClick={() => window.print()}>
+            <Receipt size={18} />
+            Save PDF / Print
+          </ActionButton>
+          <ActionButton onClick={resetDailyReport}>
+            <Plus size={18} />
+            New report
+          </ActionButton>
+        </div>
+      </section>
+    </main>
+  );
+}
 
   if (lastSubmittedOffload) {
     return (
       <main className="staff-shell">
-        <section className="success-screen">
-          <ShieldCheck size={42} />
-          <p className="eyebrow">Pending manager confirmation</p>
-          <h1>Offloading report submitted</h1>
-          <p>
-            {stationName(data, lastSubmittedOffload.stationId)} —{" "}
-            {new Date(lastSubmittedOffload.deliveredAt).toLocaleString()}
-          </p>
-          <div className="success-actions">
+        <section className="success-screen" style={{ maxWidth: '800px', alignItems: 'stretch', textAlign: 'left' }}>
+          <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+            <ShieldCheck size={42} style={{ margin: '0 auto' }} className="no-print" />
+            <h1 style={{ marginTop: '1rem' }}>Offloading Report Submitted</h1>
+            <p style={{ fontSize: '1.1rem', color: 'var(--text-2)' }}>
+              {stationName(data, lastSubmittedOffload.stationId)} • {new Date(lastSubmittedOffload.deliveredAt).toLocaleString()}
+            </p>
+            <p><strong>Lorry:</strong> {lastSubmittedOffload.lorryId ? lorryName(data, lastSubmittedOffload.lorryId) : "Not set"}</p>
+          </div>
+
+          <div className="receipt-content" style={{ marginBottom: '2rem' }}>
+            <DataTable 
+              title="Tanks Offloaded"
+              columns={["Product", "Tank", "Offloaded", "Pre-delivery Dip"]}
+              rows={(lastSubmittedOffload.pumpLines || []).map(line => [
+                productName(data, line.productId),
+                `Tank ${line.tankNumber}`,
+                liters(line.litersDelivered),
+                liters(line.preDeliveryDipstickLiters)
+              ])}
+            />
+            
+            {lastSubmittedOffload.notes && (
+              <div style={{ marginTop: '1.5rem', padding: '1rem', background: 'var(--surface-2)', borderRadius: '8px' }}>
+                <strong>Notes: </strong> {lastSubmittedOffload.notes}
+              </div>
+            )}
+          </div>
+
+          <div className="success-actions no-print" style={{ justifyContent: 'center' }}>
             <ActionButton onClick={() => window.print()}>
               <Receipt size={18} />
-              Print
+              Save PDF / Print
+            </ActionButton>
+            <ActionButton onClick={() => navigator.share?.({ title: "Offloading report", text: `Offloading Report: ${stationName(data, lastSubmittedOffload.stationId)}` })}>
+              <Phone size={18} />
+              Share
             </ActionButton>
             <ActionButton onClick={resetOffload}>
               <Plus size={18} />
@@ -1471,10 +1755,10 @@ function StaffReportShell({
                 </div>
               ))}
             </div>
-            <ActionButton onClick={addOffloadLine}>
-              <Plus size={18} />
-              Add pump/tank line
-            </ActionButton>
+<ActionButton onClick={addOffloadLine}>
+  <Plus size={18} />
+  Add tank line
+</ActionButton>
           </EntryPanel>
 
           <EntryPanel title="Notes" description="Optional notes for the manager reviewing this offload." icon={ClipboardList}>
@@ -2685,12 +2969,7 @@ function Setup({ reference, forms, updateForm, submit, submitPumpTankLink, datab
               onChange={(v) => updateForm("station", "dieselTankCount", Number(v))}
               options={[{ value: "1", label: "1 tank" }, { value: "2", label: "2 tanks" }]}
             />
-            <SelectField
-              label="Kerosene tanks"
-              value={String(forms.station.keroseneTankCount)}
-              onChange={(v) => updateForm("station", "keroseneTankCount", Number(v))}
-              options={[{ value: "1", label: "1 tank" }, { value: "2", label: "2 tanks" }]}
-            />
+
           </FormGrid>
           <ActionButton onClick={() => submit("station", "/api/stations", "Petrol station added.")}>
             <Plus size={18} />
@@ -3144,17 +3423,33 @@ function debtStatusBadge(status) {
 // ---------------------------------------------------------------------------
 // Lookup helpers
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Lookup helpers
+// ---------------------------------------------------------------------------
 function stationName(data, stationId) {
-  return data.stations.find((s) => s.id === stationId)?.name || "Unknown station";
+  // If the ID is missing (or case-mismatched), safely fallback to the 
+  // staff member's only assigned station
+  const safeId = stationId || (data?.stations?.length === 1 ? data.stations[0].id : "");
+  const match = data?.stations?.find(
+    (s) => String(s.id).toLowerCase() === String(safeId).toLowerCase()
+  );
+  return match?.name || "Unknown station";
 }
 
 function productName(data, productId) {
-  return data.products.find((p) => p.id === productId)?.name || "Unknown product";
+  if (!productId) return "Unknown product";
+  const match = data?.products?.find(
+    (p) => String(p.id).toLowerCase() === String(productId).toLowerCase()
+  );
+  return match?.name || "Unknown product";
 }
 
 function lorryName(data, lorryId) {
   if (!lorryId) return "Not assigned";
-  return data.lorries.find((l) => l.id === lorryId)?.plateNumber || "Unknown lorry";
+  const match = data?.lorries?.find(
+    (l) => String(l.id).toLowerCase() === String(lorryId).toLowerCase()
+  );
+  return match?.plateNumber || "Unknown lorry";
 }
 
 // ---------------------------------------------------------------------------
