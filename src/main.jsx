@@ -346,6 +346,51 @@ function productTankCount(station, product) {
   return station.petrolTankCount || 1;
 }
 
+// Total physical tanks at a station = sum of every product's tank count.
+// e.g. 2 petrol tanks + 1 diesel tank + 1 kerosene tank = 4 tanks total.
+// Works for both a saved station object and a raw form-values object,
+// since both shapes carry petrolTankCount / dieselTankCount / keroseneTankCount.
+function totalTankCount(stationLike) {
+  if (!stationLike) return 0;
+  const petrol = Number(stationLike.petrolTankCount || 0);
+  const diesel = Number(stationLike.dieselTankCount || 0);
+  const kerosene = Number(stationLike.keroseneTankCount || 0);
+  return petrol + diesel + kerosene;
+}
+
+// The backend numbers tanks LOCALLY per product (Diesel "Tank 1" and Petrol
+// "Tank 1" are different physical tanks that just share a number — that's a
+// fine storage key, but confusing to read). These helpers compute a
+// station-wide "global" tank number purely for display, in a fixed order:
+// Petrol tanks first, then Diesel, then Kerosene. The backend never sees
+// this number — only the local tankNumber is ever submitted to the API.
+function classifyProduct(product) {
+  const name = (product?.name || "").toLowerCase();
+  if (name.includes("diesel") || name.includes("ago")) return "diesel";
+  if (name.includes("kerosene")) return "kerosene";
+  return "petrol";
+}
+
+function tankOffsetFor(station, product) {
+  if (!station) return 0;
+  const kind = classifyProduct(product);
+  const petrol = Number(station.petrolTankCount || 0);
+  const diesel = Number(station.dieselTankCount || 0);
+  if (kind === "petrol") return 0;
+  if (kind === "diesel") return petrol;
+  return petrol + diesel; // kerosene comes after petrol and diesel
+}
+
+// e.g. Diesel's local Tank 1 becomes station-wide "Tank 3" when the station
+// has 2 petrol tanks numbered ahead of it.
+function globalTankNumber(station, product, localTankNumber) {
+  return tankOffsetFor(station, product) + Number(localTankNumber || 1);
+}
+
+function globalTankLabel(station, product, localTankNumber) {
+  return `Tank ${globalTankNumber(station, product, localTankNumber)}`;
+}
+
 function pumpTankLinksFor(links, stationId, productId) {
   return (links || [])
     .filter((link) => link.stationId === stationId && link.productId === productId)
@@ -2934,8 +2979,11 @@ function Setup({ reference, forms, updateForm, submit, submitPumpTankLink, datab
   const selectedLinkProduct = reference.products.find((product) => product.id === forms.pumpTankLink.productId);
   const selectedTankCount = productTankCount(selectedLinkStation, selectedLinkProduct);
   const tankOptions = Array.from({ length: selectedTankCount }, (_, index) => {
-    const tankNumber = index + 1;
-    return { value: String(tankNumber), label: `Tank ${tankNumber}` };
+    const localTankNumber = index + 1;
+    return {
+      value: String(localTankNumber),
+      label: globalTankLabel(selectedLinkStation, selectedLinkProduct, localTankNumber)
+    };
   });
 
   return (
@@ -2949,11 +2997,20 @@ function Setup({ reference, forms, updateForm, submit, submitPumpTankLink, datab
       </section>
 
       <section className="setup-tables two-column">
-        <EntryPanel title="New petrol station" description="Add stations before recording deliveries, deposits, and month-end closures." icon={Building2}>
+        <EntryPanel
+          title="New petrol station"
+          description="Add stations before recording deliveries, deposits, and month-end closures."
+          icon={Building2}
+        >
           <FormGrid>
             <InputField label="Station name" value={forms.station.name} onChange={(v) => updateForm("station", "name", v)} />
             <InputField label="Location" value={forms.station.location} onChange={(v) => updateForm("station", "location", v)} />
-            <InputField label="Tank capacity" type="number" value={forms.station.tankCapacityLiters} onChange={(v) => updateForm("station", "tankCapacityLiters", v)} />
+            <InputField
+              label="Total tank capacity (all tanks combined)"
+              type="number"
+              value={forms.station.tankCapacityLiters}
+              onChange={(v) => updateForm("station", "tankCapacityLiters", v)}
+            />
             <InputField label="Low-stock alert" type="number" value={forms.station.lowStockThresholdLiters} onChange={(v) => updateForm("station", "lowStockThresholdLiters", v)} />
           </FormGrid>
           <FormGrid>
@@ -2961,16 +3018,27 @@ function Setup({ reference, forms, updateForm, submit, submitPumpTankLink, datab
               label="Petrol tanks"
               value={String(forms.station.petrolTankCount)}
               onChange={(v) => updateForm("station", "petrolTankCount", Number(v))}
-              options={[{ value: "1", label: "1 tank" }, { value: "2", label: "2 tanks" }]}
+              options={[{ value: "0", label: "No petrol tanks" }, { value: "1", label: "1 tank" }, { value: "2", label: "2 tanks" }]}
             />
             <SelectField
               label="Diesel tanks"
               value={String(forms.station.dieselTankCount)}
               onChange={(v) => updateForm("station", "dieselTankCount", Number(v))}
-              options={[{ value: "1", label: "1 tank" }, { value: "2", label: "2 tanks" }]}
+              options={[{ value: "0", label: "No diesel tanks" }, { value: "1", label: "1 tank" }, { value: "2", label: "2 tanks" }]}
             />
-
+            <SelectField
+              label="Kerosene tanks"
+              value={String(forms.station.keroseneTankCount)}
+              onChange={(v) => updateForm("station", "keroseneTankCount", Number(v))}
+              options={[{ value: "0", label: "No kerosene tanks" }, { value: "1", label: "1 tank" }, { value: "2", label: "2 tanks" }]}
+            />
           </FormGrid>
+          <p className="field-note">
+            This station will have <strong>{totalTankCount(forms.station)} tank{totalTankCount(forms.station) === 1 ? "" : "s"}</strong> in
+            total ({forms.station.petrolTankCount || 0} petrol + {forms.station.dieselTankCount || 0} diesel +{" "}
+            {forms.station.keroseneTankCount || 0} kerosene). The tank capacity above is the combined capacity of all of
+            them — it is not the capacity of a single tank.
+          </p>
           <ActionButton onClick={() => submit("station", "/api/stations", "Petrol station added.")}>
             <Plus size={18} />
             Add station
@@ -2993,6 +3061,17 @@ function Setup({ reference, forms, updateForm, submit, submitPumpTankLink, datab
 
       <section className="two-column">
         <EntryPanel title="Link pumps to tank" description="Map each physical pump to the tank it draws from for this station and product." icon={Link2}>
+          {selectedLinkStation && (
+            <p className="field-note">
+              {selectedLinkStation.name} has <strong>{totalTankCount(selectedLinkStation)} tanks</strong> in total
+              {selectedLinkProduct && (
+                <>
+                  , of which <strong>{selectedTankCount}</strong> {selectedTankCount === 1 ? "is" : "are"} for{" "}
+                  {selectedLinkProduct.name}.
+                </>
+              )}
+            </p>
+          )}
           <FormGrid>
             <SelectField
               label="Station"
@@ -3034,22 +3113,27 @@ function Setup({ reference, forms, updateForm, submit, submitPumpTankLink, datab
         <DataTable
           title="Pump to tank links"
           columns={["Station", "Product", "Pump", "Tank"]}
-          rows={(reference.pumpTankLinks || []).map((link) => [
-            reference.stations.find((station) => station.id === link.stationId)?.name || "Unknown station",
-            reference.products.find((product) => product.id === link.productId)?.name || "Unknown product",
-            `Pump ${link.pumpNumber}`,
-            `Tank ${link.tankNumber}`
-          ])}
+          rows={(reference.pumpTankLinks || []).map((link) => {
+            const station = reference.stations.find((item) => item.id === link.stationId);
+            const product = reference.products.find((item) => item.id === link.productId);
+            return [
+              station?.name || "Unknown station",
+              product?.name || "Unknown product",
+              `Pump ${link.pumpNumber}`,
+              globalTankLabel(station, product, link.tankNumber)
+            ];
+          })}
         />
       </section>
 
       <section className="section-band two-column">
         <DataTable
           title="Petrol stations"
-          columns={["Station", "Location", "Tank capacity", "Low-stock alert"]}
+          columns={["Station", "Location", "Total tanks", "Tank capacity", "Low-stock alert"]}
           rows={reference.stations.map((station) => [
             station.name,
             station.location,
+            `${totalTankCount(station)} (${station.petrolTankCount || 0}P / ${station.dieselTankCount || 0}D / ${station.keroseneTankCount || 0}K)`,
             liters(station.tankCapacityLiters),
             liters(station.lowStockThresholdLiters)
           ])}
